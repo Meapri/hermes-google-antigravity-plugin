@@ -507,7 +507,27 @@ index 318e55d3e..a86bcfbc5 100644
 +        return
 +
 +    status = get_antigravity_auth_status()
-+    if not status.get("logged_in"):
++    force_relogin = False
++    if status.get("logged_in"):
++        email = status.get("email") or "unknown account"
++        project_id = status.get("project_id") or "auto-discover"
++        print(f"  Existing Antigravity login: {email}")
++        print(f"  Project: {project_id}")
++        print()
++        print("How should Hermes authenticate Antigravity?")
++        print("  1. Reuse existing login (recommended)")
++        print("  2. Sign in again / switch account")
++        try:
++            auth_choice = input("  Choose [1/2] (1): ").strip()
++        except (EOFError, KeyboardInterrupt):
++            print("\nCancelled.")
++            return
++        if auth_choice == "2":
++            force_relogin = True
++    else:
++        force_relogin = True
++
++    if force_relogin:
 +        try:
 +            from agent.google_antigravity_oauth import resolve_project_id_from_env, start_oauth_flow
 +
