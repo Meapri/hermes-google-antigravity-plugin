@@ -47,6 +47,7 @@ ANTIGRAVITY_VERSION_FALLBACK = "2.0.1"
 ANTIGRAVITY_VERSION_URL = "https://antigravity-auto-updater-974169037036.us-central1.run.app"
 ANTIGRAVITY_VERSION_CACHE_TTL_SECONDS = 6 * 60 * 60
 _ANTIGRAVITY_VERSION_CACHE: Dict[str, Any] = {"version": ANTIGRAVITY_VERSION_FALLBACK, "fetched_at": 0.0}
+GOOGLE_ONE_AI_CREDIT_TYPE = "GOOGLE_ONE_AI"
 
 # Antigravity 2.0's UI labels do not always match the backend model ID accepted
 # by the Cloud Code PA v1internal generateContent endpoint. Keep the requested
@@ -322,8 +323,13 @@ def _apply_antigravity_request_transforms(request: Dict[str, Any], *, model: str
     _append_system_text(request, ANTIGRAVITY_SYSTEM_INSTRUCTION, prepend=True, role="user")
     request["sessionId"] = str(request.get("sessionId") or f"-{uuid.uuid4()}")
 
+def _antigravity_google_one_ai_credits_enabled() -> bool:
+    value = os.getenv("HERMES_ANTIGRAVITY_GOOGLE_ONE_AI_CREDITS", "1").strip().lower()
+    return value not in {"0", "false", "no", "off"}
+
+
 def _wrap_antigravity_request(*, project_id: str, model: str, request: Dict[str, Any]) -> Dict[str, Any]:
-    return {
+    wrapped = {
         "project": project_id,
         "model": model,
         "request": request,
@@ -331,6 +337,12 @@ def _wrap_antigravity_request(*, project_id: str, model: str, request: Dict[str,
         "userAgent": "antigravity",
         "requestId": "agent-" + str(uuid.uuid4()),
     }
+    # Google One AI/Ultra credits are opt-in at the Cloud Code PA request layer.
+    # Without this field, Claude/third-party models can be rejected by the small
+    # standard request bucket even when the account has monthly Ultra credits.
+    if _antigravity_google_one_ai_credits_enabled():
+        wrapped["enabledCreditTypes"] = [GOOGLE_ONE_AI_CREDIT_TYPE]
+    return wrapped
 
 
 def _antigravity_model_candidates(model: str) -> List[str]:

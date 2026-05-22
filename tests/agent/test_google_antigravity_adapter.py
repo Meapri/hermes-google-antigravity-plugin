@@ -42,8 +42,20 @@ def test_wrap_antigravity_request_uses_agent_body_metadata():
     assert wrapped["model"] == "gemini-3-flash"
     assert wrapped["requestType"] == "agent"
     assert wrapped["userAgent"] == "antigravity"
+    assert wrapped["enabledCreditTypes"] == ["GOOGLE_ONE_AI"]
     assert str(wrapped["requestId"]).startswith("agent-")
     assert wrapped["request"] == {"contents": []}
+
+
+def test_google_one_ai_credits_can_be_disabled(monkeypatch):
+    monkeypatch.setenv("HERMES_ANTIGRAVITY_GOOGLE_ONE_AI_CREDITS", "0")
+    wrapped = getattr(ag, "_wrap_antigravity_request")(
+        project_id="test-project",
+        model="claude-opus-4-6-thinking",
+        request={"contents": []},
+    )
+
+    assert "enabledCreditTypes" not in wrapped
 
 
 def test_antigravity_20_ui_models_have_backend_fallbacks():
