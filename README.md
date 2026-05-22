@@ -7,6 +7,7 @@ This package turns the Antigravity work into a clean Hermes plugin bundle:
 - `plugins/model-providers/google-antigravity/` registers the `google-antigravity` provider profile.
 - `agent/google_antigravity_oauth.py` reuses Hermes' generic Google OAuth machinery with Antigravity's OAuth client, scopes, callback port, credential file, and project ID handling.
 - `agent/google_antigravity_adapter.py` adapts Antigravity's Cloud Code PA endpoint to Hermes' OpenAI-compatible chat-completions client interface.
+- `agent/antigravity_quota_grpc.py` probes Antigravity's `FetchQuotaStatus` gRPC quota API and falls back safely when the service returns no buckets.
 - `patches/hermes-agent-antigravity-core.patch` wires Hermes' current runtime, auth, model picker, and quota paths to the plugin until Hermes exposes first-class plugin hooks for custom model clients and OAuth resolvers.
 
 ## Status
@@ -116,20 +117,27 @@ Optional Antigravity app version override:
 export HERMES_ANTIGRAVITY_VERSION=2.0.2
 ```
 
-Quota and credit behavior:
+Quota, tier, and credit behavior:
 
-By default the adapter matches the Antigravity app/CLI and sends `enabledCreditTypes: ["GOOGLE_ONE_AI"]`, so Google can route requests through the account's Google One AI / Ultra entitlement. Override only for diagnostics or if you intentionally want a different burn order:
+The adapter reads `loadCodeAssist.paidTier` and treats it as the effective tier when present. This is required because Google One AI subscribers can still report `currentTier: free-tier`; Plus/Pro/Ultra entitlement lives in `paidTier` with `availableCredits`.
+
+By default the adapter auto-detects Google AI Plus / Pro / Ultra and only sends `enabledCreditTypes: ["GOOGLE_ONE_AI"]` when usable `GOOGLE_ONE_AI` credits are available. Override only for diagnostics or if you intentionally want a different burn order:
 
 ```bash
-# Default: match Antigravity app/CLI
+# Default: detect paid Google AI plan + usable credits before opting in
+export HERMES_ANTIGRAVITY_GOOGLE_ONE_AI_CREDITS=auto
+
+# Force Google One AI entitlement/credit routing
 export HERMES_ANTIGRAVITY_GOOGLE_ONE_AI_CREDITS=always
 
 # Try raw Code Assist first, then retry with Google One AI entitlement on capacity errors
 export HERMES_ANTIGRAVITY_GOOGLE_ONE_AI_CREDITS=fallback
 
 # Disable Google One AI entitlement entirely
-export HERMES_ANTIGRAVITY_GOOGLE_ONE_AI_CREDITS=0
+export HERMES_ANTIGRAVITY_GOOGLE_ONE_AI_CREDITS=off
 ```
+
+`/gquota` displays the effective plan name from `paidTier.name`, the live Google One AI credit balance, and marks base-quota buckets at 0% as `→ using credits` when the credit path is available. It does not hard-code Plus/Pro/Ultra numeric quota limits; live API data is the source of truth.
 
 Claude Opus/Sonnet and GPT-OSS can also hit a short rolling capacity guard even when `/gquota` shows the 5-hour/daily bucket as available. The adapter locally paces those expensive models and retries short `RESOURCE_EXHAUSTED` responses before surfacing an error. Tune or disable that guard with:
 
@@ -174,7 +182,7 @@ Once Hermes adds plugin hooks for custom OAuth providers and model clients, the 
 
 Do not commit `google_antigravity.json`, OAuth tokens, browser cookies, `.env`, or terminal logs.
 
-The OAuth client ID/secret in the source are public client credentials used by the Antigravity desktop flow, not user credentials.
+OAuth client IDs/secrets, even public desktop-client values, are intentionally not committed here. Configure them with `HERMES_ANTIGRAVITY_CLIENT_ID` and `HERMES_ANTIGRAVITY_CLIENT_SECRET` in your local environment or `$HERMES_HOME/.env`.
 
 ## License
 

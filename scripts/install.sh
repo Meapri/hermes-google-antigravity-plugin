@@ -77,6 +77,7 @@ cp "$REPO_ROOT/plugins/model-providers/google-antigravity/__init__.py" \
 
 cp "$REPO_ROOT/agent/google_antigravity_adapter.py" "$HERMES_AGENT_DIR/agent/"
 cp "$REPO_ROOT/agent/google_antigravity_oauth.py" "$HERMES_AGENT_DIR/agent/"
+cp "$REPO_ROOT/agent/antigravity_quota_grpc.py" "$HERMES_AGENT_DIR/agent/"
 _prompt_oauth_credentials
 
 if [[ -s "$REPO_ROOT/patches/hermes-agent-antigravity-core.patch" ]]; then

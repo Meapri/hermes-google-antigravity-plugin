@@ -59,11 +59,22 @@ def test_google_one_ai_credits_are_explicitly_opted_into():
     assert wrapped["enabledCreditTypes"] == ["GOOGLE_ONE_AI"]
 
 
-def test_google_one_ai_credit_mode_defaults_to_antigravity_app_behavior(monkeypatch):
+def test_google_one_ai_credit_mode_defaults_to_plan_detection(monkeypatch):
     monkeypatch.delenv("HERMES_ANTIGRAVITY_GOOGLE_ONE_AI_CREDITS", raising=False)
 
-    assert getattr(ag, "_antigravity_google_one_ai_credits_mode")() == "always"
-    assert getattr(ag, "_antigravity_credit_attempts")() == [True]
+    paid_ctx = ag.ProjectContext(
+        tier_id="g1-ultra-tier",
+        paid_tier_id="g1-ultra-tier",
+        paid_tier_name="Google AI Ultra",
+        google_one_ai_credit_amount=23737,
+        google_one_ai_minimum_credit_amount=50,
+        has_google_one_ai_credits=True,
+    )
+    free_ctx = ag.ProjectContext(tier_id="free-tier")
+
+    assert getattr(ag, "_antigravity_google_one_ai_credits_mode")() == "auto"
+    assert getattr(ag, "_antigravity_credit_attempts")(paid_ctx) == [True]
+    assert getattr(ag, "_antigravity_credit_attempts")(free_ctx) == [False]
 
 
 def test_google_one_ai_credit_mode_can_prefer_base_quota_or_disable(monkeypatch):

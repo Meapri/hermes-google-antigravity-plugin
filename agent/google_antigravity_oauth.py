@@ -30,9 +30,6 @@ MARKER_BASE_URL = "cloudcode-pa://antigravity"
 #
 #   HERMES_ANTIGRAVITY_CLIENT_ID
 #   HERMES_ANTIGRAVITY_CLIENT_SECRET
-#
-# Hermes core builds may choose to bundle known public desktop-client values,
-# but external plugin distributions should keep them out of git history.
 ANTIGRAVITY_CLIENT_ID = ""
 ANTIGRAVITY_CLIENT_SECRET = ""
 ANTIGRAVITY_SCOPES = (
@@ -40,7 +37,8 @@ ANTIGRAVITY_SCOPES = (
     "https://www.googleapis.com/auth/userinfo.email "
     "https://www.googleapis.com/auth/userinfo.profile "
     "https://www.googleapis.com/auth/cclog "
-    "https://www.googleapis.com/auth/experimentsandconfigs"
+    "https://www.googleapis.com/auth/experimentsandconfigs "
+    "https://www.googleapis.com/auth/aicode"
 )
 ANTIGRAVITY_REDIRECT_PORT = 51121
 ANTIGRAVITY_CALLBACK_PATH = "/oauth-callback"
@@ -145,10 +143,11 @@ def start_oauth_flow(
         try:
             from agent.google_code_assist import FREE_TIER_ID, load_code_assist
 
-            info = load_code_assist(creds.access_token)
+            info = load_code_assist(creds.access_token, client_profile="antigravity")
             discovered_project = info.cloudaicompanion_project
             if discovered_project:
-                managed_project = discovered_project if info.current_tier_id == FREE_TIER_ID else ""
+                effective_tier = info.effective_tier_id or info.current_tier_id
+                managed_project = discovered_project if effective_tier == FREE_TIER_ID else ""
                 update_project_ids(project_id=discovered_project, managed_project_id=managed_project)
                 creds.project_id = discovered_project
                 creds.managed_project_id = managed_project

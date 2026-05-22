@@ -25,7 +25,7 @@ index b98fe4b44..3b89fd279 100644
 +        return client
 +    if agent.provider == "google-gemini-cli" or base_url_marker.startswith("cloudcode-pa://google"):
          from agent.gemini_cloudcode_adapter import GeminiCloudCodeClient
-
+ 
          # Strip OpenAI-specific kwargs the Gemini client doesn't accept
 diff --git a/agent/auxiliary_client.py b/agent/auxiliary_client.py
 index 89dc7d935..29e8aa840 100644
@@ -34,7 +34,7 @@ index 89dc7d935..29e8aa840 100644
 @@ -3267,6 +3267,55 @@ def resolve_provider_client(
          return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                  else (client, final_model))
-
+ 
 +    # ── Google OAuth providers (Cloud Code / Antigravity) ─────────────
 +    # These providers are registered as oauth_external.  Without explicit aux
 +    # branches they fall through to the generic OAuth arm below, which returns
@@ -87,6 +87,46 @@ index 89dc7d935..29e8aa840 100644
      # ── Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY) ───────────
      if provider == "custom":
          if explicit_base_url:
+diff --git a/agent/chat_completion_helpers.py b/agent/chat_completion_helpers.py
+index c68f2271f..68a95cb19 100644
+--- a/agent/chat_completion_helpers.py
++++ b/agent/chat_completion_helpers.py
+@@ -530,7 +530,7 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
+ 
+     # Sanitize surrogates from API response — some models (e.g. Kimi/GLM via Ollama)
+     # can return invalid surrogate code points that crash json.dumps() on persist.
+-    _raw_content = assistant_message.content or ""
++    _raw_content = "" if assistant_tool_calls else (assistant_message.content or "")
+     _san_content = _sanitize_surrogates(_raw_content)
+     if reasoning_text:
+         reasoning_text = _sanitize_surrogates(reasoning_text)
+@@ -551,7 +551,7 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
+ 
+     msg = {
+         "role": "assistant",
+-        "content": _san_content,
++        "content": None if assistant_tool_calls else _san_content,
+         "reasoning": reasoning_text,
+         "finish_reason": finish_reason,
+     }
+@@ -1531,8 +1531,15 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
+             if hasattr(chunk, "usage") and chunk.usage:
+                 usage_obj = chunk.usage
+ 
+-        # Build mock response matching non-streaming shape
+-        full_content = "".join(content_parts) or None
++        # Build mock response matching non-streaming shape.  OpenAI-compatible
++        # tool-call assistant messages should not carry natural-language
++        # content.  Some providers (notably Gemini/Antigravity through the
++        # OpenAI shim) stream a planning preamble before the first tool_call
++        # delta; if we persist that preamble as assistant content, Hermes shows
++        # the model's scratchpad ("I'll inspect...", "잠깐...") as if it were a
++        # final answer.  Drop accumulated text whenever this turn contains
++        # tool calls; the tool call itself is the assistant message content.
++        full_content = None if tool_calls_acc else ("".join(content_parts) or None)
+         mock_tool_calls = None
+         has_truncated_tool_args = False
+         if tool_calls_acc:
 diff --git a/agent/gemini_cloudcode_adapter.py b/agent/gemini_cloudcode_adapter.py
 index 222327807..d84dc9e5b 100644
 --- a/agent/gemini_cloudcode_adapter.py
@@ -129,16 +169,16 @@ index 222327807..d84dc9e5b 100644
 -        },
 +        "functionResponse": function_response,
      }
-
-
+ 
+ 
 diff --git a/agent/gemini_schema.py b/agent/gemini_schema.py
 index 7d5385063..707837961 100644
 --- a/agent/gemini_schema.py
 +++ b/agent/gemini_schema.py
 @@ -33,6 +33,38 @@ _GEMINI_SCHEMA_ALLOWED_KEYS = {
  }
-
-
+ 
+ 
 +_GEMINI_INTEGER_SCHEMA_KEYS = {
 +    "maxItems",
 +    "minItems",
@@ -173,21 +213,234 @@ index 7d5385063..707837961 100644
 +
  def sanitize_gemini_schema(schema: Any) -> Dict[str, Any]:
      """Return a Gemini-compatible copy of a tool parameter schema.
-
+ 
 @@ -72,7 +104,7 @@ def sanitize_gemini_schema(schema: Any) -> Dict[str, Any]:
                  if isinstance(item, dict)
              ]
              continue
 -        cleaned[key] = value
 +        cleaned[key] = _coerce_schema_constraint(key, value)
-
+ 
      # Gemini's Schema validator requires every ``enum`` entry to be a string,
      # even when the parent ``type`` is ``integer`` / ``number`` / ``boolean``.
+diff --git a/agent/google_code_assist.py b/agent/google_code_assist.py
+index 3e61d1b03..2c0e06a7b 100644
+--- a/agent/google_code_assist.py
++++ b/agent/google_code_assist.py
+@@ -56,11 +56,18 @@ FALLBACK_ENDPOINTS = [
+ FREE_TIER_ID = "free-tier"
+ LEGACY_TIER_ID = "legacy-tier"
+ STANDARD_TIER_ID = "standard-tier"
++GOOGLE_ONE_AI_CREDIT_TYPE = "GOOGLE_ONE_AI"
+ 
+ # Default HTTP headers matching gemini-cli's fingerprint.
+ # Google may reject unrecognized User-Agents on these internal endpoints.
+ _GEMINI_CLI_USER_AGENT = "google-api-nodejs-client/9.15.1 (gzip)"
+ _X_GOOG_API_CLIENT = "gl-node/24.0.0"
++_ANTIGRAVITY_USER_AGENT = (
++    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
++    "AppleWebKit/537.36 (KHTML, like Gecko) "
++    "Antigravity/2.0.1 Chrome/138.0.7204.235 "
++    "Electron/37.3.1 Safari/537.36"
++)
+ _DEFAULT_REQUEST_TIMEOUT = 30.0
+ _ONBOARDING_POLL_ATTEMPTS = 12
+ _ONBOARDING_POLL_INTERVAL_SECONDS = 5.0
+@@ -117,7 +124,22 @@ class ProjectIdRequiredError(CodeAssistError):
+ # HTTP primitive (auth via Bearer token passed per-call)
+ # =============================================================================
+ 
+-def _build_headers(access_token: str, *, user_agent_model: str = "") -> Dict[str, str]:
++def _build_headers(
++    access_token: str,
++    *,
++    user_agent_model: str = "",
++    client_profile: str = "gemini-cli",
++) -> Dict[str, str]:
++    if client_profile == "antigravity":
++        headers = {
++            "Content-Type": "application/json",
++            "Accept": "application/json",
++            "Authorization": f"Bearer {access_token}",
++            "User-Agent": _ANTIGRAVITY_USER_AGENT,
++            "x-activity-request-id": str(uuid.uuid4()),
++        }
++        return headers
++
+     ua = _GEMINI_CLI_USER_AGENT
+     if user_agent_model:
+         ua = f"{ua} model/{user_agent_model}"
+@@ -147,11 +169,16 @@ def _post_json(
+     *,
+     timeout: float = _DEFAULT_REQUEST_TIMEOUT,
+     user_agent_model: str = "",
++    client_profile: str = "gemini-cli",
+ ) -> Dict[str, Any]:
+     data = json.dumps(body).encode("utf-8")
+     request = urllib.request.Request(
+         url, data=data, method="POST",
+-        headers=_build_headers(access_token, user_agent_model=user_agent_model),
++        headers=_build_headers(
++            access_token,
++            user_agent_model=user_agent_model,
++            client_profile=client_profile,
++        ),
+     )
+     try:
+         with urllib.request.urlopen(request, timeout=timeout) as response:
+@@ -213,14 +240,27 @@ class CodeAssistProjectInfo:
+     current_tier_id: str = ""
+     cloudaicompanion_project: str = ""   # Google-managed project (free tier)
+     allowed_tiers: List[str] = field(default_factory=list)
++    paid_tier_id: str = ""
++    paid_tier_name: str = ""
++    effective_tier_id: str = ""
++    effective_tier_name: str = ""
++    available_credits: List[Dict[str, Any]] = field(default_factory=list)
++    google_one_ai_credit_amount: int = 0
++    google_one_ai_minimum_credit_amount: int = 0
+     raw: Dict[str, Any] = field(default_factory=dict)
+ 
++    @property
++    def has_google_one_ai_credits(self) -> bool:
++        minimum = self.google_one_ai_minimum_credit_amount or 1
++        return self.google_one_ai_credit_amount >= minimum
++
+ 
+ def load_code_assist(
+     access_token: str,
+     *,
+     project_id: str = "",
+     user_agent_model: str = "",
++    client_profile: str = "gemini-cli",
+ ) -> CodeAssistProjectInfo:
+     """Call ``POST /v1internal:loadCodeAssist`` with prod → sandbox fallback.
+ 
+@@ -241,7 +281,13 @@ def load_code_assist(
+     for endpoint in endpoints:
+         url = f"{endpoint}/v1internal:loadCodeAssist"
+         try:
+-            resp = _post_json(url, body, access_token, user_agent_model=user_agent_model)
++            resp = _post_json(
++                url,
++                body,
++                access_token,
++                user_agent_model=user_agent_model,
++                client_profile=client_profile,
++            )
+             return _parse_load_response(resp)
+         except CodeAssistError as exc:
+             if exc.code == "code_assist_vpc_sc":
+@@ -261,6 +307,34 @@ def load_code_assist(
+ def _parse_load_response(resp: Dict[str, Any]) -> CodeAssistProjectInfo:
+     current_tier = resp.get("currentTier") or {}
+     tier_id = str(current_tier.get("id") or "") if isinstance(current_tier, dict) else ""
++    tier_name = str(current_tier.get("name") or tier_id) if isinstance(current_tier, dict) else tier_id
++    paid_tier = resp.get("paidTier") or {}
++    paid_tier_id = str(paid_tier.get("id") or "") if isinstance(paid_tier, dict) else ""
++    paid_tier_name = str(paid_tier.get("name") or paid_tier_id) if isinstance(paid_tier, dict) else ""
++    available_credits = paid_tier.get("availableCredits") if isinstance(paid_tier, dict) else []
++    if not isinstance(available_credits, list):
++        available_credits = []
++    google_one_amount = 0
++    google_one_minimum = 0
++    for credit in available_credits:
++        if not isinstance(credit, dict):
++            continue
++        if str(credit.get("creditType") or "") != GOOGLE_ONE_AI_CREDIT_TYPE:
++            continue
++        try:
++            google_one_amount = int(str(credit.get("creditAmount") or "0"))
++        except (TypeError, ValueError):
++            google_one_amount = 0
++        try:
++            google_one_minimum = int(str(credit.get("minimumCreditAmountForUsage") or "0"))
++        except (TypeError, ValueError):
++            google_one_minimum = 0
++        break
++    # Google One AI subscribers can still report currentTier=free-tier. Match
++    # Gemini/Antigravity client semantics by treating paidTier as authoritative
++    # when present; this covers AI Plus/Pro/Ultra without hard-coding tier IDs.
++    effective_tier_id = paid_tier_id or tier_id
++    effective_tier_name = paid_tier_name or tier_name or effective_tier_id
+     project = str(resp.get("cloudaicompanionProject") or "")
+     allowed = resp.get("allowedTiers") or []
+     allowed_ids: List[str] = []
+@@ -274,6 +348,13 @@ def _parse_load_response(resp: Dict[str, Any]) -> CodeAssistProjectInfo:
+         current_tier_id=tier_id,
+         cloudaicompanion_project=project,
+         allowed_tiers=allowed_ids,
++        paid_tier_id=paid_tier_id,
++        paid_tier_name=paid_tier_name,
++        effective_tier_id=effective_tier_id,
++        effective_tier_name=effective_tier_name,
++        available_credits=[c for c in available_credits if isinstance(c, dict)],
++        google_one_ai_credit_amount=google_one_amount,
++        google_one_ai_minimum_credit_amount=google_one_minimum,
+         raw=resp,
+     )
+ 
+@@ -352,13 +433,20 @@ def retrieve_user_quota(
+     *,
+     project_id: str = "",
+     user_agent_model: str = "",
++    client_profile: str = "gemini-cli",
+ ) -> List[QuotaBucket]:
+     """Call ``POST /v1internal:retrieveUserQuota`` and parse ``buckets[]``."""
+     body: Dict[str, Any] = {}
+     if project_id:
+         body["project"] = project_id
+     url = f"{CODE_ASSIST_ENDPOINT}/v1internal:retrieveUserQuota"
+-    resp = _post_json(url, body, access_token, user_agent_model=user_agent_model)
++    resp = _post_json(
++        url,
++        body,
++        access_token,
++        user_agent_model=user_agent_model,
++        client_profile=client_profile,
++    )
+     raw_buckets = resp.get("buckets") or []
+     buckets: List[QuotaBucket] = []
+     if not isinstance(raw_buckets, list):
+@@ -386,6 +474,12 @@ class ProjectContext:
+     project_id: str = ""           # effective project id sent on requests
+     managed_project_id: str = ""   # Google-assigned project (free tier)
+     tier_id: str = ""
++    tier_name: str = ""
++    paid_tier_id: str = ""
++    paid_tier_name: str = ""
++    google_one_ai_credit_amount: int = 0
++    google_one_ai_minimum_credit_amount: int = 0
++    has_google_one_ai_credits: bool = False
+     source: str = ""               # "env", "config", "discovered", "onboarded"
+ 
+ 
+@@ -422,7 +516,7 @@ def resolve_project_context(
+     info = load_code_assist(access_token, user_agent_model=user_agent_model)
+ 
+     effective_project = info.cloudaicompanion_project
+-    tier = info.current_tier_id
++    tier = info.effective_tier_id or info.current_tier_id
+ 
+     if not tier:
+         # User hasn't been onboarded — provision them on free tier
+@@ -448,5 +542,11 @@ def resolve_project_context(
+         project_id=effective_project,
+         managed_project_id=effective_project if tier == FREE_TIER_ID else "",
+         tier_id=tier,
++        tier_name=info.effective_tier_name,
++        paid_tier_id=info.paid_tier_id,
++        paid_tier_name=info.paid_tier_name,
++        google_one_ai_credit_amount=info.google_one_ai_credit_amount,
++        google_one_ai_minimum_credit_amount=info.google_one_ai_minimum_credit_amount,
++        has_google_one_ai_credits=info.has_google_one_ai_credits,
+         source=source,
+     )
 diff --git a/cli.py b/cli.py
-index 2783ca31b..4ef8ad9b7 100644
+index 2783ca31b..497fedcb0 100644
 --- a/cli.py
 +++ b/cli.py
-@@ -7365,24 +7365,98 @@ class HermesCLI:
+@@ -7365,24 +7365,151 @@ class HermesCLI:
      def _handle_gquota_command(self, cmd_original: str) -> None:
          """Show Google Gemini Code Assist quota usage for the current OAuth account."""
          try:
@@ -198,7 +451,7 @@ index 2783ca31b..4ef8ad9b7 100644
          except ImportError as exc:
              self._console_print(f"  [red]Gemini modules unavailable: {exc}[/]")
              return
-
+ 
 +        cfg = load_config() or {}
 +        model_cfg = cfg.get("model") or {}
 +        provider = str(model_cfg.get("provider") or "").strip().lower()
@@ -231,93 +484,183 @@ index 2783ca31b..4ef8ad9b7 100644
 -            self._console_print("  Run [bold]/model[/] and pick 'Google Gemini (OAuth)' to sign in.")
 +            self._console_print(f"  {login_hint}")
              return
-
+ 
 -        creds = load_credentials()
 +        creds = quota_oauth.load_credentials()
          project_id = (creds.project_id if creds else "") or ""
--
--        try:
--            buckets = retrieve_user_quota(access_token, project_id=project_id)
 +        if use_antigravity and not project_id:
 +            project_id = quota_oauth.resolve_project_id_from_env()
 +
-+        try:
-+            if use_antigravity:
-+                import json as _json
-+                import urllib.error as _urlerror
-+                import urllib.request as _urlrequest
-+                import uuid as _uuid
-+                from agent.google_antigravity_adapter import ANTIGRAVITY_ENDPOINT_PROD, get_antigravity_headers
-+
-+                body = {"project": project_id} if project_id else {}
-+                headers = {
-+                    "Content-Type": "application/json",
-+                    "Accept": "application/json",
-+                    "Authorization": f"Bearer {access_token}",
-+                    "x-activity-request-id": str(_uuid.uuid4()),
-+                    **get_antigravity_headers(refresh_version=True),
-+                }
-+                request = _urlrequest.Request(
-+                    f"{ANTIGRAVITY_ENDPOINT_PROD}/v1internal:retrieveUserQuota",
-+                    data=_json.dumps(body).encode("utf-8"),
-+                    headers=headers,
-+                    method="POST",
++        # --- Discover plan/tier info via loadCodeAssist (Antigravity only) ---
++        plan_name = ""
++        plan_credits = ""
++        plan_minimum_credits = 0
++        plan_has_google_one_credits = False
++        if use_antigravity:
++            try:
++                from agent.google_code_assist import load_code_assist
++                tier_info = load_code_assist(
++                    access_token,
++                    project_id=project_id,
++                    client_profile="antigravity",
 +                )
-+                try:
-+                    with _urlrequest.urlopen(request, timeout=30) as response:
-+                        payload = response.read().decode("utf-8", errors="replace")
-+                        quota_data = _json.loads(payload) if payload else {}
-+                except _urlerror.HTTPError as http_exc:
-+                    detail = ""
-+                    try:
-+                        detail = http_exc.read().decode("utf-8", errors="replace")
-+                    except Exception:
-+                        pass
-+                    raise CodeAssistError(
-+                        f"Code Assist HTTP {http_exc.code}: {detail or http_exc.reason}",
-+                        code=f"code_assist_http_{http_exc.code}",
-+                    ) from http_exc
++                if not project_id:
++                    project_id = tier_info.cloudaicompanion_project or project_id
++                # paidTier is authoritative for Google AI Plus/Pro/Ultra even
++                # when currentTier remains free-tier.
++                plan_name = tier_info.effective_tier_name or tier_info.effective_tier_id
++                if tier_info.google_one_ai_credit_amount:
++                    plan_credits = str(tier_info.google_one_ai_credit_amount)
++                plan_minimum_credits = tier_info.google_one_ai_minimum_credit_amount
++                plan_has_google_one_credits = tier_info.has_google_one_ai_credits
++            except Exception:
++                pass  # non-fatal — quota display still works without plan info
+ 
++        quota_source = "REST retrieveUserQuota"
+         try:
+-            buckets = retrieve_user_quota(access_token, project_id=project_id)
++            if use_antigravity:
++                # Prefer the Antigravity CLI quota path. This is the newer gRPC
++                # FetchQuotaStatus API; it can report quota_type for base vs
++                # extended/plan-backed buckets when the service returns them.
 +                buckets = []
-+                raw_buckets = quota_data.get("buckets") if isinstance(quota_data, dict) else []
-+                if isinstance(raw_buckets, list):
-+                    for b in raw_buckets:
-+                        if not isinstance(b, dict):
-+                            continue
-+                        buckets.append(QuotaBucket(
-+                            model_id=str(b.get("modelId") or ""),
-+                            token_type=str(b.get("tokenType") or ""),
-+                            remaining_fraction=float(b.get("remainingFraction") or 0.0),
-+                            reset_time_iso=str(b.get("resetTime") or ""),
-+                            raw=b,
-+                        ))
++                try:
++                    from agent.antigravity_quota_grpc import fetch_quota_status
++
++                    grpc_buckets = fetch_quota_status(access_token) or []
++                    if grpc_buckets:
++                        quota_source = "gRPC FetchQuotaStatus"
++                        quota_label = "Antigravity quota"
++                        buckets = [
++                            QuotaBucket(
++                                model_id=b.model,
++                                token_type=b.quota_type_name or f"quota_type={b.quota_type}",
++                                remaining_fraction=float(b.remaining_fraction or 0.0),
++                                reset_time_iso=b.reset_time,
++                                raw=b.raw,
++                            )
++                            for b in grpc_buckets
++                            if b.model
++                        ]
++                except Exception:
++                    buckets = []
++
++                # Fallback: older Code Assist REST quota. This often shows only
++                # the base bucket even when AI Pro/Ultra credits are active.
++                if not buckets:
++                    import json as _json
++                    import urllib.error as _urlerror
++                    import urllib.request as _urlrequest
++                    import uuid as _uuid
++                    from agent.google_antigravity_adapter import ANTIGRAVITY_ENDPOINT_PROD, get_antigravity_headers
++
++                    body = {"project": project_id} if project_id else {}
++                    headers = {
++                        "Content-Type": "application/json",
++                        "Accept": "application/json",
++                        "Authorization": f"Bearer {access_token}",
++                        "x-activity-request-id": str(_uuid.uuid4()),
++                        **get_antigravity_headers(refresh_version=True),
++                    }
++                    request = _urlrequest.Request(
++                        f"{ANTIGRAVITY_ENDPOINT_PROD}/v1internal:retrieveUserQuota",
++                        data=_json.dumps(body).encode("utf-8"),
++                        headers=headers,
++                        method="POST",
++                    )
++                    try:
++                        with _urlrequest.urlopen(request, timeout=30) as response:
++                            payload = response.read().decode("utf-8", errors="replace")
++                            quota_data = _json.loads(payload) if payload else {}
++                    except _urlerror.HTTPError as http_exc:
++                        detail = ""
++                        try:
++                            detail = http_exc.read().decode("utf-8", errors="replace")
++                        except Exception:
++                            pass
++                        raise CodeAssistError(
++                            f"Code Assist HTTP {http_exc.code}: {detail or http_exc.reason}",
++                            code=f"code_assist_http_{http_exc.code}",
++                        ) from http_exc
++                    raw_buckets = quota_data.get("buckets") if isinstance(quota_data, dict) else []
++                    if isinstance(raw_buckets, list):
++                        for b in raw_buckets:
++                            if not isinstance(b, dict):
++                                continue
++                            buckets.append(QuotaBucket(
++                                model_id=str(b.get("modelId") or ""),
++                                token_type=str(b.get("tokenType") or ""),
++                                remaining_fraction=float(b.get("remainingFraction") or 0.0),
++                                reset_time_iso=str(b.get("resetTime") or ""),
++                                raw=b,
++                            ))
 +            else:
 +                buckets = retrieve_user_quota(access_token, project_id=project_id)
          except CodeAssistError as exc:
              self._console_print(f"  [red]Quota lookup failed:[/] {exc}")
              return
-@@ -7392,9 +7466,10 @@ class HermesCLI:
+@@ -7392,20 +7519,48 @@ class HermesCLI:
              return
-
+ 
          # Sort for stable display, group by model
 +        buckets = [b for b in buckets if not (b.model_id.lower().startswith("chat_") or b.model_id.lower().startswith("tab_"))]
          buckets.sort(key=lambda b: (b.model_id, b.token_type))
          self._console_print()
 -        self._console_print(f"  [bold]Gemini Code Assist quota[/]  (project: {project_id or '(auto / free-tier)'})")
-+        self._console_print(f"  [bold]{quota_label}[/]  (project: {project_id or '(auto / free-tier)'})")
++        # Determine effective tier label (paidTier takes precedence, same as Gemini CLI)
++        effective_tier = plan_name or "Free"
++        tier_short = effective_tier  # e.g. "Google AI Ultra", "Free"
++        # Build header
++        self._console_print(f"  [bold]{quota_label}[/]  ·  plan: [cyan]{effective_tier}[/]  ·  source: [dim]{quota_source}[/]")
++        project_line = f"  project: {project_id or '(auto)'}"
++        if plan_credits:
++            project_line += f"  ·  credits: [green]{plan_credits}[/]"
++        self._console_print(project_line)
          self._console_print()
++        has_credits = plan_has_google_one_credits
++        if not has_credits:
++            try:
++                credit_amount = int(plan_credits) if plan_credits else 0
++            except Exception:
++                credit_amount = 0
++            minimum = plan_minimum_credits or 50
++            has_credits = credit_amount >= minimum
          for b in buckets:
              pct = max(0.0, min(1.0, b.remaining_fraction))
+             width = 20
+             filled = int(round(pct * width))
+             bar = "▓" * filled + "░" * (width - filled)
+-            pct_str = f"{int(pct * 100):3d}%"
++            remaining_pct = int(pct * 100)
++            if remaining_pct == 0 and has_credits:
++                pct_str = f"[dim]  0%[/] [cyan]→ using credits[/]"
++            elif remaining_pct == 0:
++                pct_str = f"[red][bold]  0% exhausted[/][/]"
++            elif remaining_pct <= 20:
++                pct_str = f"[yellow]{remaining_pct:3d}% remaining[/]"
++            else:
++                pct_str = f"{remaining_pct:3d}% remaining"
+             header = b.model_id
+             if b.token_type:
+                 header += f" [{b.token_type}]"
+             self._console_print(f"    {header:40s}  {bar}  {pct_str}")
++        if has_credits:
++            credit_label = plan_name or "Google One AI"
++            self._console_print(f"  [dim]Base quota shown above. Models at 0% continue via [cyan]{credit_label} credits ({plan_credits} remaining)[/cyan].[/]")
+         self._console_print()
+ 
+     def _handle_personality_command(self, cmd: str):
 diff --git a/hermes_cli/auth.py b/hermes_cli/auth.py
 index 59daa2c5d..fa09f6e6b 100644
 --- a/hermes_cli/auth.py
 +++ b/hermes_cli/auth.py
 @@ -150,6 +150,7 @@ SERVICE_PROVIDER_NAMES: Dict[str, str] = {
-
+ 
  # Google Gemini OAuth (google-gemini-cli provider, Cloud Code Assist backend)
  DEFAULT_GEMINI_CLOUDCODE_BASE_URL = "cloudcode-pa://google"
 +DEFAULT_ANTIGRAVITY_BASE_URL = "cloudcode-pa://antigravity"
  GEMINI_OAUTH_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 60  # refresh 60s before expiry
-
+ 
  # LM Studio's default no-auth mode still requires *some* non-empty bearer for
 @@ -214,6 +215,12 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
          auth_type="oauth_external",
@@ -414,7 +757,7 @@ index 59daa2c5d..fa09f6e6b 100644
 +    }
  # Spotify auth — PKCE tokens stored in ~/.hermes/auth.json
  # =============================================================================
-
+ 
 @@ -5648,6 +5722,8 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
          return get_qwen_auth_status()
      if target == "google-gemini-cli":
@@ -431,7 +774,7 @@ index 8852eb63e..463afa9c6 100644
 @@ -382,6 +382,28 @@ def auth_add_command(args) -> None:
          print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
          return
-
+ 
 +    if provider == "google-antigravity":
 +        from agent.google_antigravity_oauth import run_antigravity_oauth_login_pure
 +
@@ -458,7 +801,7 @@ index 8852eb63e..463afa9c6 100644
          creds = auth_mod.resolve_qwen_runtime_credentials(refresh_if_expiring=False)
          label = (getattr(args, "label", None) or "").strip() or label_from_token(
 diff --git a/hermes_cli/main.py b/hermes_cli/main.py
-index 318e55d3e..a86bcfbc5 100644
+index 318e55d3e..26cc083ab 100644
 --- a/hermes_cli/main.py
 +++ b/hermes_cli/main.py
 @@ -2188,6 +2188,8 @@ def select_provider_and_model(args=None):
@@ -470,10 +813,10 @@ index 318e55d3e..a86bcfbc5 100644
      elif selected_provider == "copilot-acp":
          _model_flow_copilot_acp(config, current_model)
      elif selected_provider == "copilot":
-@@ -3330,6 +3332,69 @@ def _model_flow_google_gemini_cli(_config, current_model=""):
+@@ -3330,6 +3332,89 @@ def _model_flow_google_gemini_cli(_config, current_model=""):
          print("No change.")
-
-
+ 
+ 
 +
 +def _model_flow_google_antigravity(_config, current_model=""):
 +    """Google Antigravity OAuth via Antigravity Code Assist.
@@ -559,8 +902,8 @@ index 318e55d3e..a86bcfbc5 100644
 +
  def _model_flow_custom(config):
      """Custom endpoint: collect URL, API key, and model name.
-
-@@ -10399,7 +10464,7 @@ def _build_provider_choices() -> list[str]:
+ 
+@@ -10399,7 +10484,7 @@ def _build_provider_choices() -> list[str]:
          # Fallback: static list guarantees the CLI always works
          return [
              "auto", "openrouter", "nous", "openai-codex", "xai-oauth", "copilot-acp", "copilot",
@@ -605,7 +948,7 @@ index 336e22081..c45f1dd5a 100644
 @@ -1788,6 +1803,15 @@ def _resolve_static_model_alias(
          if matched := _match(provider):
              return provider, matched
-
+ 
 +    # Prefer the native direct provider for generic aliases like "sonnet" before
 +    # specialized bridge providers (e.g. google-antigravity also exposes Claude
 +    # model IDs, but typing `/model sonnet` should keep the long-standing
@@ -643,7 +986,7 @@ index 73aa5c455..60f615a6a 100644
 @@ -1423,6 +1427,26 @@ def resolve_runtime_provider(
              logger.info("Google Gemini OAuth credentials failed; "
                          "falling through to next provider.")
-
+ 
 +    if provider == "google-antigravity":
 +        try:
 +            creds = resolve_antigravity_runtime_credentials()
@@ -686,23 +1029,23 @@ index f461afff5..99b891cf8 100644
 +
      # Coerce string arguments to their schema-declared types (e.g. "42"→42)
      function_args = coerce_tool_args(function_name, function_args)
-
+ 
 diff --git a/plugins/model-providers/gemini/__init__.py b/plugins/model-providers/gemini/__init__.py
 index 0812f07ba..c7172ca5c 100644
 --- a/plugins/model-providers/gemini/__init__.py
 +++ b/plugins/model-providers/gemini/__init__.py
 @@ -2,6 +2,7 @@
-
+ 
  gemini:            Google AI Studio (API key) — uses GeminiNativeClient
  google-gemini-cli: Google Cloud Code Assist (OAuth) — uses GeminiCloudCodeClient
 +google-antigravity: Google Antigravity OAuth — uses GoogleAntigravityClient
-
+ 
  Both report api_mode="chat_completions" but use custom native clients
  that bypass the standard OpenAI transport. The profile captures auth
 @@ -68,5 +69,15 @@ google_gemini_cli = GeminiProfile(
      auth_type="oauth_external",
  )
-
+ 
 +google_antigravity = GeminiProfile(
 +    name="google-antigravity",
 +    aliases=("antigravity", "antigravity-oauth"),
@@ -716,23 +1059,95 @@ index 0812f07ba..c7172ca5c 100644
  register_provider(google_gemini_cli)
 +register_provider(google_antigravity)
 diff --git a/tests/agent/test_gemini_cloudcode.py b/tests/agent/test_gemini_cloudcode.py
-index 480f562aa..d1894b1cd 100644
+index 480f562aa..d6807a8f3 100644
 --- a/tests/agent/test_gemini_cloudcode.py
 +++ b/tests/agent/test_gemini_cloudcode.py
-@@ -612,6 +612,7 @@ class TestBuildGeminiRequest:
+@@ -439,6 +439,29 @@ class TestLoadCodeAssist:
+         info = google_code_assist.load_code_assist("access-token", project_id="corp-proj")
+         assert info.current_tier_id == "standard-tier"
+         assert info.cloudaicompanion_project == "corp-proj"
++    def test_antigravity_profile_uses_browser_headers(self):
++        from agent import google_code_assist
++
++        headers = google_code_assist._build_headers("access-token", client_profile="antigravity")
++
++        assert "Antigravity/" in headers["User-Agent"]
++        assert "X-Goog-Api-Client" not in headers
++        assert headers["Authorization"] == "Bearer access-token"
++
++    def test_antigravity_profile_flows_to_post_json(self, monkeypatch):
++        from agent import google_code_assist
++
++        seen = {}
++
++        def fake_post(url, body, token, **kw):
++            seen.update(kw)
++            return {"currentTier": {"id": "free-tier"}}
++
++        monkeypatch.setattr(google_code_assist, "_post_json", fake_post)
++
++        google_code_assist.load_code_assist("access-token", client_profile="antigravity")
++
++        assert seen["client_profile"] == "antigravity"
+ 
+ 
+ class TestOnboardUser:
+@@ -550,6 +573,41 @@ class TestResolveProjectContext:
+         assert ctx.tier_id == "free-tier"
+         assert ctx.source == "discovered"
+ 
++    def test_paid_tier_overrides_current_free_tier_and_parses_google_one_credits(self, monkeypatch):
++        from agent import google_code_assist
++
++        monkeypatch.setattr(
++            google_code_assist, "_post_json",
++            lambda *a, **kw: {
++                "currentTier": {"id": "free-tier", "name": "Antigravity"},
++                "paidTier": {
++                    "id": "g1-pro-tier",
++                    "name": "Google AI Pro",
++                    "availableCredits": [
++                        {
++                            "creditType": "GOOGLE_ONE_AI",
++                            "creditAmount": "1200",
++                            "minimumCreditAmountForUsage": "50",
++                        }
++                    ],
++                },
++                "cloudaicompanionProject": "discovered-proj",
++            },
++        )
++        info = google_code_assist.load_code_assist("at", client_profile="antigravity")
++        assert info.current_tier_id == "free-tier"
++        assert info.effective_tier_id == "g1-pro-tier"
++        assert info.effective_tier_name == "Google AI Pro"
++        assert info.google_one_ai_credit_amount == 1200
++        assert info.google_one_ai_minimum_credit_amount == 50
++        assert info.has_google_one_ai_credits is True
++
++        ctx = google_code_assist.resolve_project_context("at")
++        assert ctx.tier_id == "g1-pro-tier"
++        assert ctx.tier_name == "Google AI Pro"
++        assert ctx.managed_project_id == ""
++        assert ctx.has_google_one_ai_credits is True
++
+ 
+ # =============================================================================
+ # gemini_cloudcode_adapter.py — request/response translation
+@@ -612,6 +670,7 @@ class TestBuildGeminiRequest:
          fc_part = next(p for p in model_turn["parts"] if "functionCall" in p)
          assert fc_part["functionCall"]["name"] == "get_weather"
          assert fc_part["functionCall"]["args"] == {"city": "SF"}
 +        assert fc_part["functionCall"]["id"] == "call_1"
-
+ 
      def test_tool_result_translation(self):
          from agent.gemini_cloudcode_adapter import build_gemini_request
-@@ -634,6 +635,7 @@ class TestBuildGeminiRequest:
+@@ -634,6 +693,7 @@ class TestBuildGeminiRequest:
          fr_part = next(p for p in last["parts"] if "functionResponse" in p)
          assert fr_part["functionResponse"]["name"] == "get_weather"
          assert fr_part["functionResponse"]["response"] == {"temp": 72}
 +        assert fr_part["functionResponse"]["id"] == "c1"
-
+ 
      def test_tools_translated_to_function_declarations(self):
          from agent.gemini_cloudcode_adapter import build_gemini_request
 diff --git a/tests/agent/test_gemini_schema.py b/tests/agent/test_gemini_schema.py
@@ -742,7 +1157,7 @@ index 069c99a21..d54352e03 100644
 @@ -102,6 +102,20 @@ class TestSanitizeGeminiSchema:
          assert cleaned["items"]["type"] == "integer"
          assert "enum" not in cleaned["items"]
-
+ 
 +    def test_coerces_string_numeric_constraints(self):
 +        schema = {
 +            "type": "object",
@@ -765,7 +1180,7 @@ index 0740e0012..2c98f2d37 100644
 --- a/tests/cli/test_gquota_command.py
 +++ b/tests/cli/test_gquota_command.py
 @@ -19,3 +19,40 @@ def test_gquota_uses_chat_console_when_tui_is_live():
-
+ 
      assert live_console.print.call_count == 2
      cli.console.print.assert_not_called()
 +
@@ -806,13 +1221,13 @@ index 0740e0012..2c98f2d37 100644
 +    assert "tab_flash_lite_preview" not in combined_printed
 +
 diff --git a/tests/hermes_cli/test_runtime_provider_resolution.py b/tests/hermes_cli/test_runtime_provider_resolution.py
-index 3adffabb4..3491fa6cd 100644
+index 3adffabb4..b5cddfeac 100644
 --- a/tests/hermes_cli/test_runtime_provider_resolution.py
 +++ b/tests/hermes_cli/test_runtime_provider_resolution.py
 @@ -207,6 +207,61 @@ def test_resolve_provider_alias_qwen(monkeypatch):
      assert rp.resolve_provider("qwen-cli") == "qwen-oauth"
-
-
+ 
+ 
 +def test_resolve_runtime_provider_google_antigravity(monkeypatch):
 +    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "google-antigravity")
 +    monkeypatch.setattr(
@@ -878,7 +1293,7 @@ index cf619ea97..d3e893231 100644
 @@ -944,6 +944,29 @@ class TestBuildAssistantMessage:
          result = agent._build_assistant_message(msg, "stop")
          assert "codex_reasoning_items" not in result
-
+ 
 +    def test_tool_call_message_discards_provider_preamble_content(self, monkeypatch):
 +        agent = _make_agent(monkeypatch, "google-antigravity")
 +        msg = SimpleNamespace(
@@ -902,723 +1317,303 @@ index cf619ea97..d3e893231 100644
 +        assert result["content"] is None
 +        assert result["tool_calls"][0]["function"]["name"] == "read_file"
 +
-
+ 
  # ── Auxiliary client provider resolution ─────────────────────────────────────
-diff --git a/agent/google_code_assist.py b/agent/google_code_assist.py
-index 3e61d1b03..c18b7ef75 100644
---- a/agent/google_code_assist.py
-+++ b/agent/google_code_assist.py
-@@ -61,6 +61,12 @@ STANDARD_TIER_ID = "standard-tier"
- # Google may reject unrecognized User-Agents on these internal endpoints.
- _GEMINI_CLI_USER_AGENT = "google-api-nodejs-client/9.15.1 (gzip)"
- _X_GOOG_API_CLIENT = "gl-node/24.0.0"
-+_ANTIGRAVITY_USER_AGENT = (
-+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-+    "AppleWebKit/537.36 (KHTML, like Gecko) "
-+    "Antigravity/2.0.1 Chrome/138.0.7204.235 "
-+    "Electron/37.3.1 Safari/537.36"
-+)
- _DEFAULT_REQUEST_TIMEOUT = 30.0
- _ONBOARDING_POLL_ATTEMPTS = 12
- _ONBOARDING_POLL_INTERVAL_SECONDS = 5.0
-@@ -117,7 +123,22 @@ class ProjectIdRequiredError(CodeAssistError):
- # HTTP primitive (auth via Bearer token passed per-call)
- # =============================================================================
-
--def _build_headers(access_token: str, *, user_agent_model: str = "") -> Dict[str, str]:
-+def _build_headers(
-+    access_token: str,
-+    *,
-+    user_agent_model: str = "",
-+    client_profile: str = "gemini-cli",
-+) -> Dict[str, str]:
-+    if client_profile == "antigravity":
-+        headers = {
-+            "Content-Type": "application/json",
-+            "Accept": "application/json",
-+            "Authorization": f"Bearer {access_token}",
-+            "User-Agent": _ANTIGRAVITY_USER_AGENT,
-+            "x-activity-request-id": str(uuid.uuid4()),
-+        }
-+        return headers
+ 
+diff --git a/tools/clarify_tool.py b/tools/clarify_tool.py
+index c44787554..d3105d137 100644
+--- a/tools/clarify_tool.py
++++ b/tools/clarify_tool.py
+@@ -89,7 +89,9 @@ CLARIFY_SCHEMA = {
+     "description": (
+         "Ask the user a question when you need clarification, feedback, or a "
+         "decision before proceeding. Supports two modes:\n\n"
+-        "1. **Multiple choice** — provide up to 4 choices. The user picks one "
++        "1. **Multiple choice** — provide up to 4 entries in the `choices` "
++        "parameter. Do not use an `options` parameter; this tool's field name "
++        "is `choices`. The user picks one "
+         "or types their own answer via a 5th 'Other' option.\n"
+         "2. **Open-ended** — omit choices entirely. The user types a free-form "
+         "response.\n\n"
+@@ -134,7 +136,7 @@ registry.register(
+     schema=CLARIFY_SCHEMA,
+     handler=lambda args, **kw: clarify_tool(
+         question=args.get("question", ""),
+-        choices=args.get("choices"),
++        choices=args.get("choices") if "choices" in args else args.get("options"),
+         callback=kw.get("callback")),
+     check_fn=check_clarify_requirements,
+     emoji="❓",
+diff --git a/tests/agent/test_chat_completion_streaming.py b/tests/agent/test_chat_completion_streaming.py
+new file mode 100644
+index 000000000..5a536d699
+--- /dev/null
++++ b/tests/agent/test_chat_completion_streaming.py
+@@ -0,0 +1,133 @@
++from types import SimpleNamespace
 +
-     ua = _GEMINI_CLI_USER_AGENT
-     if user_agent_model:
-         ua = f"{ua} model/{user_agent_model}"
-@@ -147,11 +168,16 @@ def _post_json(
-     *,
-     timeout: float = _DEFAULT_REQUEST_TIMEOUT,
-     user_agent_model: str = "",
-+    client_profile: str = "gemini-cli",
- ) -> Dict[str, Any]:
-     data = json.dumps(body).encode("utf-8")
-     request = urllib.request.Request(
-         url, data=data, method="POST",
--        headers=_build_headers(access_token, user_agent_model=user_agent_model),
-+        headers=_build_headers(
-+            access_token,
-+            user_agent_model=user_agent_model,
-+            client_profile=client_profile,
-+        ),
-     )
-     try:
-         with urllib.request.urlopen(request, timeout=timeout) as response:
-@@ -221,6 +247,7 @@ def load_code_assist(
-     *,
-     project_id: str = "",
-     user_agent_model: str = "",
-+    client_profile: str = "gemini-cli",
- ) -> CodeAssistProjectInfo:
-     """Call ``POST /v1internal:loadCodeAssist`` with prod → sandbox fallback.
-
-@@ -241,7 +268,13 @@ def load_code_assist(
-     for endpoint in endpoints:
-         url = f"{endpoint}/v1internal:loadCodeAssist"
-         try:
--            resp = _post_json(url, body, access_token, user_agent_model=user_agent_model)
-+            resp = _post_json(
-+                url,
-+                body,
-+                access_token,
-+                user_agent_model=user_agent_model,
-+                client_profile=client_profile,
-+            )
-             return _parse_load_response(resp)
-         except CodeAssistError as exc:
-             if exc.code == "code_assist_vpc_sc":
-@@ -352,13 +385,20 @@ def retrieve_user_quota(
-     *,
-     project_id: str = "",
-     user_agent_model: str = "",
-+    client_profile: str = "gemini-cli",
- ) -> List[QuotaBucket]:
-     """Call ``POST /v1internal:retrieveUserQuota`` and parse ``buckets[]``."""
-     body: Dict[str, Any] = {}
-     if project_id:
-         body["project"] = project_id
-     url = f"{CODE_ASSIST_ENDPOINT}/v1internal:retrieveUserQuota"
--    resp = _post_json(url, body, access_token, user_agent_model=user_agent_model)
-+    resp = _post_json(
-+        url,
-+        body,
-+        access_token,
-+        user_agent_model=user_agent_model,
-+        client_profile=client_profile,
-+    )
-     raw_buckets = resp.get("buckets") or []
-     buckets: List[QuotaBucket] = []
-     if not isinstance(raw_buckets, list):
-
-# Local Hermes Ultra/Google One AI credits fix
-diff --git a/agent/google_antigravity_adapter.py b/agent/google_antigravity_adapter.py
-index 9e2086a..de98880 100644
---- a/agent/google_antigravity_adapter.py
-+++ b/agent/google_antigravity_adapter.py
-@@ -47,6 +47,7 @@ ANTIGRAVITY_VERSION_FALLBACK = "2.0.1"
- ANTIGRAVITY_VERSION_URL = "https://antigravity-auto-updater-974169037036.us-central1.run.app"
- ANTIGRAVITY_VERSION_CACHE_TTL_SECONDS = 6 * 60 * 60
- _ANTIGRAVITY_VERSION_CACHE: Dict[str, Any] = {"version": ANTIGRAVITY_VERSION_FALLBACK, "fetched_at": 0.0}
-+GOOGLE_ONE_AI_CREDIT_TYPE = "GOOGLE_ONE_AI"
-
- # Antigravity 2.0's UI labels do not always match the backend model ID accepted
- # by the Cloud Code PA v1internal generateContent endpoint. Keep the requested
-@@ -322,8 +323,13 @@ def _apply_antigravity_request_transforms(request: Dict[str, Any], *, model: str
-     _append_system_text(request, ANTIGRAVITY_SYSTEM_INSTRUCTION, prepend=True, role="user")
-     request["sessionId"] = str(request.get("sessionId") or f"-{uuid.uuid4()}")
-
-+def _antigravity_google_one_ai_credits_enabled() -> bool:
-+    value = os.getenv("HERMES_ANTIGRAVITY_GOOGLE_ONE_AI_CREDITS", "1").strip().lower()
-+    return value not in {"0", "false", "no", "off"}
++from agent.chat_completion_helpers import interruptible_streaming_api_call
 +
 +
- def _wrap_antigravity_request(*, project_id: str, model: str, request: Dict[str, Any]) -> Dict[str, Any]:
--    return {
-+    wrapped = {
-         "project": project_id,
-         "model": model,
-         "request": request,
-@@ -331,6 +337,12 @@ def _wrap_antigravity_request(*, project_id: str, model: str, request: Dict[str,
-         "userAgent": "antigravity",
-         "requestId": "agent-" + str(uuid.uuid4()),
-     }
-+    # Google One AI/Ultra credits are opt-in at the Cloud Code PA request layer.
-+    # Without this field, Claude/third-party models can be rejected by the small
-+    # standard request bucket even when the account has monthly Ultra credits.
-+    if _antigravity_google_one_ai_credits_enabled():
-+        wrapped["enabledCreditTypes"] = [GOOGLE_ONE_AI_CREDIT_TYPE]
-+    return wrapped
-
-
- def _antigravity_model_candidates(model: str) -> List[str]:
-diff --git a/tests/agent/test_google_antigravity_adapter.py b/tests/agent/test_google_antigravity_adapter.py
-index 5058b6b..131ff94 100644
---- a/tests/agent/test_google_antigravity_adapter.py
-+++ b/tests/agent/test_google_antigravity_adapter.py
-@@ -42,10 +42,22 @@ def test_wrap_antigravity_request_uses_agent_body_metadata():
-     assert wrapped["model"] == "gemini-3-flash"
-     assert wrapped["requestType"] == "agent"
-     assert wrapped["userAgent"] == "antigravity"
-+    assert wrapped["enabledCreditTypes"] == ["GOOGLE_ONE_AI"]
-     assert str(wrapped["requestId"]).startswith("agent-")
-     assert wrapped["request"] == {"contents": []}
-
-
-+def test_google_one_ai_credits_can_be_disabled(monkeypatch):
-+    monkeypatch.setenv("HERMES_ANTIGRAVITY_GOOGLE_ONE_AI_CREDITS", "0")
-+    wrapped = getattr(ag, "_wrap_antigravity_request")(
-+        project_id="test-project",
-+        model="claude-opus-4-6-thinking",
-+        request={"contents": []},
-+    )
++class _FakeCompletions:
++    def __init__(self, chunks):
++        self._chunks = chunks
 +
-+    assert "enabledCreditTypes" not in wrapped
++    def create(self, **kwargs):
++        self.kwargs = kwargs
++        return iter(self._chunks)
 +
 +
- def test_antigravity_20_ui_models_have_backend_fallbacks():
-     candidates = getattr(ag, "_antigravity_model_candidates")
-
-
-# Local Hermes credit fallback policy fix
-diff --git a/agent/google_antigravity_adapter.py b/agent/google_antigravity_adapter.py
-index de98880..8647e6a 100644
---- a/agent/google_antigravity_adapter.py
-+++ b/agent/google_antigravity_adapter.py
-@@ -11,7 +11,7 @@ import os
- import re
- import time
- import uuid
--from typing import Any, Dict, Iterator, List, Optional
-+from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple, Union
-
- import httpx
-
-@@ -49,6 +49,7 @@ ANTIGRAVITY_VERSION_CACHE_TTL_SECONDS = 6 * 60 * 60
- _ANTIGRAVITY_VERSION_CACHE: Dict[str, Any] = {"version": ANTIGRAVITY_VERSION_FALLBACK, "fetched_at": 0.0}
- GOOGLE_ONE_AI_CREDIT_TYPE = "GOOGLE_ONE_AI"
-
-+
- # Antigravity 2.0's UI labels do not always match the backend model ID accepted
- # by the Cloud Code PA v1internal generateContent endpoint. Keep the requested
- # model first so newly enabled upstream IDs start working automatically, then
-@@ -323,12 +324,56 @@ def _apply_antigravity_request_transforms(request: Dict[str, Any], *, model: str
-     _append_system_text(request, ANTIGRAVITY_SYSTEM_INSTRUCTION, prepend=True, role="user")
-     request["sessionId"] = str(request.get("sessionId") or f"-{uuid.uuid4()}")
-
--def _antigravity_google_one_ai_credits_enabled() -> bool:
--    value = os.getenv("HERMES_ANTIGRAVITY_GOOGLE_ONE_AI_CREDITS", "1").strip().lower()
--    return value not in {"0", "false", "no", "off"}
-+def _antigravity_google_one_ai_credits_mode() -> str:
-+    """How to use Google One AI/Ultra credits for Antigravity requests.
-+
-+    Default to ``always`` to match Antigravity app/CLI behavior: when the user
-+    has an AI/Ultra subscription, Cloud Code PA requests must opt in with
-+    ``enabledCreditTypes=["GOOGLE_ONE_AI"]`` or the backend evaluates only the
-+    smaller raw Code Assist bucket and can return quota exhausted while the
-+    Antigravity app still answers.  Users who specifically want to burn the raw
-+    base bucket before monthly AI credits can set
-+    ``HERMES_ANTIGRAVITY_GOOGLE_ONE_AI_CREDITS=fallback``; ``0``/``off`` keeps
-+    the legacy no-credit behavior for diagnostics.
-+    """
-+
-+    value = os.getenv("HERMES_ANTIGRAVITY_GOOGLE_ONE_AI_CREDITS", "always").strip().lower()
-+    if value in {"1", "true", "yes", "on", "always", "force"}:
-+        return "always"
-+    if value in {"0", "false", "no", "off", "never", "disabled"}:
-+        return "never"
-+    return "fallback"
-
-
--def _wrap_antigravity_request(*, project_id: str, model: str, request: Dict[str, Any]) -> Dict[str, Any]:
-+def _antigravity_credit_attempts() -> List[bool]:
-+    mode = _antigravity_google_one_ai_credits_mode()
-+    if mode == "always":
-+        return [True]
-+    if mode == "never":
-+        return [False]
-+    return [False, True]
++class _FakeClient:
++    def __init__(self, chunks):
++        self.chat = SimpleNamespace(completions=_FakeCompletions(chunks))
 +
 +
-+def _is_google_one_ai_credit_fallback_error(error: Optional[CodeAssistError]) -> bool:
-+    if error is None:
-+        return False
-+    if getattr(error, "code", "") == "code_assist_capacity_exhausted":
++class _FakeAgent:
++    api_mode = "chat_completions"
++    provider = "google-antigravity"
++    model = "gemini-3.5-flash-high"
++    base_url = "https://example.invalid"
++    reasoning_callback = None
++    stream_delta_callback = None
++    verbose_logging = False
++
++    def __init__(self, chunks):
++        self._chunks = chunks
++        self._interrupt_requested = False
++        self.streamed = []
++        self.reasoning = []
++        self.tools_started = []
++        self.recorded_stream_text = []
++        self.closed_clients = []
++
++    def _create_request_openai_client(self, **kwargs):
++        return _FakeClient(self._chunks)
++
++    def _close_request_openai_client(self, client, reason):
++        self.closed_clients.append(reason)
++
++    def _touch_activity(self, message):
++        pass
++
++    def _stream_diag_init(self):
++        return {"chunks": 0, "first_chunk_at": None, "bytes": 0}
++
++    def _stream_diag_capture_response(self, diag, response):
++        pass
++
++    def _capture_rate_limits(self, response):
++        pass
++
++    def _check_openrouter_cache_status(self, response):
++        pass
++
++    def _has_stream_consumers(self):
 +        return True
-+    details = getattr(error, "details", {}) or {}
-+    reason = str(details.get("reason") or "").upper()
-+    status = str(details.get("status") or "").upper()
-+    message = str(details.get("message") or error or "").lower()
-+    return (
-+        reason == "MODEL_CAPACITY_EXHAUSTED"
-+        or (status == "RESOURCE_EXHAUSTED" and "capacity" in message)
-+        or "exhausted your capacity" in message
++
++    def _fire_stream_delta(self, text):
++        self.streamed.append(text)
++
++    def _record_streamed_assistant_text(self, text):
++        self.recorded_stream_text.append(text)
++
++    def _fire_reasoning_delta(self, text):
++        self.reasoning.append(text)
++
++    def _fire_tool_gen_started(self, name):
++        self.tools_started.append(name)
++
++    def _try_refresh_anthropic_client_credentials(self):
++        pass
++
++    def _is_provider_stream_parse_error(self, exc):
++        return False
++
++
++def _chunk(delta, finish_reason=None, model="gemini-3.5-flash-high"):
++    return SimpleNamespace(
++        model=model,
++        choices=[SimpleNamespace(delta=delta, finish_reason=finish_reason)],
++        usage=None,
 +    )
 +
 +
-+def _wrap_antigravity_request(
-+    *,
-+    project_id: str,
-+    model: str,
-+    request: Dict[str, Any],
-+    use_google_one_ai_credits: bool = False,
-+) -> Dict[str, Any]:
-     wrapped = {
-         "project": project_id,
-         "model": model,
-@@ -337,10 +382,7 @@ def _wrap_antigravity_request(*, project_id: str, model: str, request: Dict[str,
-         "userAgent": "antigravity",
-         "requestId": "agent-" + str(uuid.uuid4()),
-     }
--    # Google One AI/Ultra credits are opt-in at the Cloud Code PA request layer.
--    # Without this field, Claude/third-party models can be rejected by the small
--    # standard request bucket even when the account has monthly Ultra credits.
--    if _antigravity_google_one_ai_credits_enabled():
-+    if use_google_one_ai_credits:
-         wrapped["enabledCreditTypes"] = [GOOGLE_ONE_AI_CREDIT_TYPE]
-     return wrapped
-
-@@ -512,7 +554,7 @@ class GoogleAntigravityClient(GeminiCloudCodeClient):
-         source = "antigravity"
-         if not project_id:
-             try:
--                info = load_code_assist(access_token, user_agent_model=model)
-+                info = load_code_assist(access_token, user_agent_model=model, client_profile="antigravity")
-                 project_id = info.cloudaicompanion_project
-                 tier_id = info.current_tier_id
-                 managed_project_id = project_id if tier_id == FREE_TIER_ID else ""
-@@ -572,7 +614,7 @@ class GoogleAntigravityClient(GeminiCloudCodeClient):
-
-         model_candidates = _antigravity_model_candidates(model)
-
--        def build_wrapped(effective_model: str) -> Dict[str, Any]:
-+        def build_wrapped(effective_model: str, *, use_google_one_ai_credits: bool = False) -> Dict[str, Any]:
-             inner = build_gemini_request(
-                 messages=messages or [],
-                 tools=tools,
-@@ -587,33 +629,47 @@ class GoogleAntigravityClient(GeminiCloudCodeClient):
-             # aliases still get thinking/tool normalization even when the
-             # backend model ID omits the label suffix.
-             _apply_antigravity_request_transforms(inner, model=model, thinking_config=thinking_config)
--            return _wrap_antigravity_request(project_id=ctx.project_id, model=effective_model, request=inner)
-+            return _wrap_antigravity_request(
-+                project_id=ctx.project_id,
-+                model=effective_model,
-+                request=inner,
-+                use_google_one_ai_credits=use_google_one_ai_credits,
++def _text_delta(text):
++    return SimpleNamespace(content=text, tool_calls=None, reasoning_content=None, reasoning=None)
++
++
++def _tool_delta(name="read_file", arguments='{"path":"/tmp/example"}'):
++    return SimpleNamespace(
++        content=None,
++        reasoning_content=None,
++        reasoning=None,
++        tool_calls=[
++            SimpleNamespace(
++                index=0,
++                id="call_1",
++                function=SimpleNamespace(name=name, arguments=arguments),
 +            )
-
-+        credit_attempts = _antigravity_credit_attempts()
-         if stream:
--            wrapped_candidates = [(candidate, build_wrapped(candidate)) for candidate in model_candidates]
-+            wrapped_candidates = [
-+                (candidate, build_wrapped(candidate, use_google_one_ai_credits=use_credits), use_credits)
-+                for candidate in model_candidates
-+                for use_credits in credit_attempts
-+            ]
-             return self._stream_completion(model=model, wrapped_candidates=wrapped_candidates, headers=headers)
-
-         last_error: Optional[CodeAssistError] = None
-         retry_statuses = {400, 404, 429, 500, 502, 503, 504}
-         for effective_model in model_candidates:
--            wrapped = build_wrapped(effective_model)
--            for endpoint in ANTIGRAVITY_ENDPOINT_FALLBACKS:
--                url = f"{endpoint}/v1internal:generateContent"
--                response = self._http.post(url, json=wrapped, headers=headers)
--                if response.status_code == 200:
--                    try:
--                        payload = response.json()
--                    except ValueError as exc:
--                        raise CodeAssistError(
--                            f"Invalid JSON from Antigravity Code Assist: {exc}",
--                            code="antigravity_invalid_json",
--                        ) from exc
--                    return _translate_gemini_response(payload, model=model)
--                last_error = _gemini_http_error(response)
--                if response.status_code == 403 and _is_endpoint_service_disabled(response):
-+            for use_credits in credit_attempts:
-+                wrapped = build_wrapped(effective_model, use_google_one_ai_credits=use_credits)
-+                for endpoint in ANTIGRAVITY_ENDPOINT_FALLBACKS:
-+                    url = f"{endpoint}/v1internal:generateContent"
-+                    response = self._http.post(url, json=wrapped, headers=headers)
-+                    if response.status_code == 200:
-+                        try:
-+                            payload = response.json()
-+                        except ValueError as exc:
-+                            raise CodeAssistError(
-+                                f"Invalid JSON from Antigravity Code Assist: {exc}",
-+                                code="antigravity_invalid_json",
-+                            ) from exc
-+                        return _translate_gemini_response(payload, model=model)
-+                    last_error = _gemini_http_error(response)
-+                    if response.status_code == 403 and _is_endpoint_service_disabled(response):
-+                        continue
-+                    if response.status_code not in retry_statuses:
-+                        break
-+                if not use_credits and _is_google_one_ai_credit_fallback_error(last_error):
-                     continue
--                if response.status_code not in retry_statuses:
--                    break
-+                break
-         raise last_error or CodeAssistError("Antigravity request failed", code="antigravity_request_failed")
-
-     def _stream_completion(
-@@ -622,15 +678,21 @@ class GoogleAntigravityClient(GeminiCloudCodeClient):
-         model: str,
-         headers: Dict[str, str],
-         wrapped: Optional[Dict[str, Any]] = None,
--        wrapped_candidates: Optional[List[tuple[str, Dict[str, Any]]]] = None,
-+        wrapped_candidates: Optional[Sequence[Union[Tuple[str, Dict[str, Any]], Tuple[str, Dict[str, Any], bool]]]] = None,
-     ) -> Iterator[_GeminiStreamChunk]:
-         stream_headers = dict(headers)
-         stream_headers["Accept"] = "text/event-stream"
--        candidates = wrapped_candidates or [(model, wrapped or {})]
-+        candidates: Sequence[Union[Tuple[str, Dict[str, Any]], Tuple[str, Dict[str, Any], bool]]]
-+        candidates = wrapped_candidates or [(model, wrapped or {}, False)]
-
-         def _generator() -> Iterator[_GeminiStreamChunk]:
-             last_error: Optional[Exception] = None
--            for effective_model, wrapped_body in candidates:
-+            for candidate in candidates:
-+                if len(candidate) == 3:
-+                    effective_model, wrapped_body, use_credits = candidate
-+                else:
-+                    effective_model, wrapped_body = candidate
-+                    use_credits = False
-                 for endpoint in ANTIGRAVITY_ENDPOINT_FALLBACKS:
-                     url = f"{endpoint}/v1internal:streamGenerateContent?alt=sse"
-                     try:
-@@ -642,7 +704,9 @@ class GoogleAntigravityClient(GeminiCloudCodeClient):
-                                     continue
-                                 if response.status_code not in {400, 404, 429, 500, 502, 503, 504}:
-                                     raise last_error
--                                continue
-+                                if use_credits or _is_google_one_ai_credit_fallback_error(last_error):
-+                                    continue
-+                                raise last_error
-                             tool_call_counter: List[int] = [0]
-                             for event in _iter_sse_events(response):
-                                 for chunk in _translate_stream_event(event, model, tool_call_counter):
-diff --git a/tests/agent/test_google_antigravity_adapter.py b/tests/agent/test_google_antigravity_adapter.py
-index 131ff94..155ab47 100644
---- a/tests/agent/test_google_antigravity_adapter.py
-+++ b/tests/agent/test_google_antigravity_adapter.py
-@@ -31,7 +31,8 @@ def test_antigravity_version_can_be_overridden_for_fast_upgrades(monkeypatch):
-     assert "Antigravity/2.0.2" in headers["User-Agent"]
-
-
--def test_wrap_antigravity_request_uses_agent_body_metadata():
-+def test_wrap_antigravity_request_uses_agent_body_metadata(monkeypatch):
-+    monkeypatch.delenv("HERMES_ANTIGRAVITY_GOOGLE_ONE_AI_CREDITS", raising=False)
-     wrapped = getattr(ag, "_wrap_antigravity_request")(
-         project_id="test-project",
-         model="gemini-3-flash",
-@@ -42,20 +43,55 @@ def test_wrap_antigravity_request_uses_agent_body_metadata():
-     assert wrapped["model"] == "gemini-3-flash"
-     assert wrapped["requestType"] == "agent"
-     assert wrapped["userAgent"] == "antigravity"
--    assert wrapped["enabledCreditTypes"] == ["GOOGLE_ONE_AI"]
-+    assert "enabledCreditTypes" not in wrapped
-     assert str(wrapped["requestId"]).startswith("agent-")
-     assert wrapped["request"] == {"contents": []}
-
-
--def test_google_one_ai_credits_can_be_disabled(monkeypatch):
--    monkeypatch.setenv("HERMES_ANTIGRAVITY_GOOGLE_ONE_AI_CREDITS", "0")
-+def test_google_one_ai_credits_are_explicitly_opted_into():
-     wrapped = getattr(ag, "_wrap_antigravity_request")(
-         project_id="test-project",
-         model="claude-opus-4-6-thinking",
-         request={"contents": []},
-+        use_google_one_ai_credits=True,
-     )
-
--    assert "enabledCreditTypes" not in wrapped
-+    assert wrapped["enabledCreditTypes"] == ["GOOGLE_ONE_AI"]
-+
-+
-+def test_google_one_ai_credit_mode_defaults_to_antigravity_app_behavior(monkeypatch):
-+    monkeypatch.delenv("HERMES_ANTIGRAVITY_GOOGLE_ONE_AI_CREDITS", raising=False)
-+
-+    assert getattr(ag, "_antigravity_google_one_ai_credits_mode")() == "always"
-+    assert getattr(ag, "_antigravity_credit_attempts")() == [True]
-+
-+
-+def test_google_one_ai_credit_mode_can_prefer_base_quota_or_disable(monkeypatch):
-+    monkeypatch.setenv("HERMES_ANTIGRAVITY_GOOGLE_ONE_AI_CREDITS", "fallback")
-+    assert getattr(ag, "_antigravity_credit_attempts")() == [False, True]
-+
-+    monkeypatch.setenv("HERMES_ANTIGRAVITY_GOOGLE_ONE_AI_CREDITS", "0")
-+    assert getattr(ag, "_antigravity_credit_attempts")() == [False]
-+
-+
-+def test_google_one_ai_credit_fallback_only_for_capacity_errors():
-+    checker = getattr(ag, "_is_google_one_ai_credit_fallback_error")
-+
-+    capacity = ag.CodeAssistError(
-+        "You have exhausted your capacity on this model",
-+        code="code_assist_capacity_exhausted",
-+        status_code=429,
-+        details={"reason": "MODEL_CAPACITY_EXHAUSTED", "status": "RESOURCE_EXHAUSTED"},
-+    )
-+    quota = ag.CodeAssistError(
-+        "unrelated quota exhausted",
-+        code="code_assist_rate_limited",
-+        status_code=429,
-+        details={"reason": "OTHER_LIMIT", "status": "RESOURCE_EXHAUSTED"},
++        ],
 +    )
 +
-+    assert checker(capacity) is True
-+    assert checker(quota) is False
-
-
- def test_antigravity_20_ui_models_have_backend_fallbacks():
-
-# Local Hermes Antigravity short-capacity pacing fix
-diff --git a/agent/google_antigravity_adapter.py b/agent/google_antigravity_adapter.py
-index 4db0a2e..18f3c22 100644
---- a/agent/google_antigravity_adapter.py
-+++ b/agent/google_antigravity_adapter.py
-@@ -9,6 +9,7 @@ from __future__ import annotations
- 
- import os
- import re
-+import threading
- import time
- import uuid
- from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple, Union
-@@ -48,6 +49,10 @@ ANTIGRAVITY_VERSION_URL = "https://antigravity-auto-updater-974169037036.us-cent
- ANTIGRAVITY_VERSION_CACHE_TTL_SECONDS = 6 * 60 * 60
- _ANTIGRAVITY_VERSION_CACHE: Dict[str, Any] = {"version": ANTIGRAVITY_VERSION_FALLBACK, "fetched_at": 0.0}
- GOOGLE_ONE_AI_CREDIT_TYPE = "GOOGLE_ONE_AI"
-+ANTIGRAVITY_CAPACITY_RETRY_ATTEMPTS = 3
-+ANTIGRAVITY_DEFAULT_CAPACITY_PACING_SECONDS = 8.0
-+_ANTIGRAVITY_CAPACITY_PACING_LOCK = threading.Lock()
-+_ANTIGRAVITY_CAPACITY_NEXT_ALLOWED_AT: Dict[str, float] = {}
- 
- 
- # Antigravity 2.0's UI labels do not always match the backend model ID accepted
-@@ -354,6 +359,68 @@ def _antigravity_credit_attempts() -> List[bool]:
-     return [False, True]
- 
- 
-+def _antigravity_capacity_pacing_interval(model: str) -> float:
-+    """Minimum local spacing for Antigravity models with tiny burst buckets."""
 +
-+    normalized = (model or "").lower()
-+    if not any(marker in normalized for marker in ("claude-", "gpt-oss")):
-+        return 0.0
-+    raw = os.getenv("HERMES_ANTIGRAVITY_CAPACITY_PACING_SECONDS", "").strip()
-+    if raw:
-+        try:
-+            return max(0.0, float(raw))
-+        except ValueError:
-+            pass
-+    return ANTIGRAVITY_DEFAULT_CAPACITY_PACING_SECONDS
++def test_streaming_tool_call_turn_does_not_persist_preamble_content():
++    agent = _FakeAgent([
++        _chunk(_text_delta("잠깐, 현재 구현된 내용들을 살펴보면:")),
++        _chunk(_tool_delta(), finish_reason="tool_calls"),
++    ])
++
++    response = interruptible_streaming_api_call(agent, {"messages": []})
++    assert response is not None
++
++    message = response.choices[0].message
++    assert message.tool_calls
++    assert message.content is None
++    assert message.tool_calls[0].function.name == "read_file"
 +
 +
-+def _pace_antigravity_capacity_sensitive_request(model: str) -> None:
-+    """Pace expensive Antigravity starts so tool loops do not hit burst 429s."""
++def test_streaming_plain_text_turn_still_persists_content():
++    agent = _FakeAgent([
++        _chunk(_text_delta("정상 답변입니다."), finish_reason="stop"),
++    ])
 +
-+    interval = _antigravity_capacity_pacing_interval(model)
-+    if interval <= 0:
-+        return
-+    key = (model or "").lower()
-+    while True:
-+        with _ANTIGRAVITY_CAPACITY_PACING_LOCK:
-+            now = time.monotonic()
-+            next_allowed = _ANTIGRAVITY_CAPACITY_NEXT_ALLOWED_AT.get(key, 0.0)
-+            wait = next_allowed - now
-+            if wait <= 0:
-+                _ANTIGRAVITY_CAPACITY_NEXT_ALLOWED_AT[key] = now + interval
-+                return
-+        time.sleep(min(wait, interval))
++    response = interruptible_streaming_api_call(agent, {"messages": []})
++    assert response is not None
 +
-+
-+def _push_antigravity_capacity_pacing(model: str, delay_seconds: float) -> None:
-+    interval = _antigravity_capacity_pacing_interval(model)
-+    delay = max(interval, delay_seconds or 0.0)
-+    if delay <= 0:
-+        return
-+    key = (model or "").lower()
-+    with _ANTIGRAVITY_CAPACITY_PACING_LOCK:
-+        _ANTIGRAVITY_CAPACITY_NEXT_ALLOWED_AT[key] = max(
-+            _ANTIGRAVITY_CAPACITY_NEXT_ALLOWED_AT.get(key, 0.0),
-+            time.monotonic() + delay,
-+        )
++    message = response.choices[0].message
++    assert message.tool_calls is None
++    assert message.content == "정상 답변입니다."
+diff --git a/tests/hermes_cli/test_google_antigravity_model_flow.py b/tests/hermes_cli/test_google_antigravity_model_flow.py
+new file mode 100644
+index 000000000..80587f80e
+--- /dev/null
++++ b/tests/hermes_cli/test_google_antigravity_model_flow.py
+@@ -0,0 +1,89 @@
++from unittest.mock import Mock
 +
 +
-+def _is_short_antigravity_capacity_error(error: Optional[BaseException]) -> bool:
-+    if not isinstance(error, CodeAssistError):
-+        return False
-+    if getattr(error, "status_code", None) != 429:
-+        return False
-+    retry_after = getattr(error, "retry_after", None)
-+    if retry_after is not None and retry_after > 10:
-+        return False
-+    details = getattr(error, "details", None) or {}
-+    if isinstance(details, dict):
-+        message = str(details.get("message") or details.get("status") or error).lower()
-+    else:
-+        message = str(error).lower()
-+    return "capacity" in message or "resource_exhausted" in message or "quota" in message
++class _InputSeq:
++    def __init__(self, values):
++        self._values = list(values)
++
++    def __call__(self, _prompt=""):
++        if not self._values:
++            raise AssertionError("unexpected input prompt")
++        return self._values.pop(0)
 +
 +
- def _is_google_one_ai_credit_fallback_error(error: Optional[CodeAssistError]) -> bool:
-     if error is None:
-         return False
-@@ -655,20 +722,33 @@ class GoogleAntigravityClient(GeminiCloudCodeClient):
-                 wrapped = build_wrapped(effective_model, use_google_one_ai_credits=use_credits)
-                 for endpoint in ANTIGRAVITY_ENDPOINT_FALLBACKS:
-                     url = f"{endpoint}/v1internal:generateContent"
--                    response = self._http.post(url, json=wrapped, headers=headers)
--                    if response.status_code == 200:
--                        try:
--                            payload = response.json()
--                        except ValueError as exc:
--                            raise CodeAssistError(
--                                f"Invalid JSON from Antigravity Code Assist: {exc}",
--                                code="antigravity_invalid_json",
--                            ) from exc
--                        return _translate_gemini_response(payload, model=model)
--                    last_error = _gemini_http_error(response)
--                    if response.status_code == 403 and _is_endpoint_service_disabled(response):
-+                    response: Optional[httpx.Response] = None
-+                    for capacity_attempt in range(ANTIGRAVITY_CAPACITY_RETRY_ATTEMPTS):
-+                        _pace_antigravity_capacity_sensitive_request(effective_model)
-+                        response = self._http.post(url, json=wrapped, headers=headers)
-+                        if response.status_code == 200:
-+                            try:
-+                                payload = response.json()
-+                            except ValueError as exc:
-+                                raise CodeAssistError(
-+                                    f"Invalid JSON from Antigravity Code Assist: {exc}",
-+                                    code="antigravity_invalid_json",
-+                                ) from exc
-+                            return _translate_gemini_response(payload, model=model)
-+                        last_error = _gemini_http_error(response)
-+                        if (
-+                            _is_short_antigravity_capacity_error(last_error)
-+                            and capacity_attempt + 1 < ANTIGRAVITY_CAPACITY_RETRY_ATTEMPTS
-+                        ):
-+                            _push_antigravity_capacity_pacing(
-+                                effective_model,
-+                                float(getattr(last_error, "retry_after", 0.0) or 0.0),
-+                            )
-+                            continue
-+                        break
-+                    if response is not None and response.status_code == 403 and _is_endpoint_service_disabled(response):
-                         continue
--                    if response.status_code not in retry_statuses:
-+                    if response is not None and response.status_code not in retry_statuses:
-                         break
-                 if not use_credits and _is_google_one_ai_credit_fallback_error(last_error):
-                     continue
-@@ -698,29 +778,40 @@ class GoogleAntigravityClient(GeminiCloudCodeClient):
-                     use_credits = False
-                 for endpoint in ANTIGRAVITY_ENDPOINT_FALLBACKS:
-                     url = f"{endpoint}/v1internal:streamGenerateContent?alt=sse"
--                    try:
--                        with self._http.stream("POST", url, json=wrapped_body, headers=stream_headers) as response:
--                            if response.status_code != 200:
--                                response.read()
--                                last_error = _gemini_http_error(response)
--                                if response.status_code == 403 and _is_endpoint_service_disabled(response):
--                                    continue
--                                if response.status_code not in {400, 404, 429, 500, 502, 503, 504}:
-+                    for capacity_attempt in range(ANTIGRAVITY_CAPACITY_RETRY_ATTEMPTS):
-+                        try:
-+                            _pace_antigravity_capacity_sensitive_request(effective_model)
-+                            with self._http.stream("POST", url, json=wrapped_body, headers=stream_headers) as response:
-+                                if response.status_code != 200:
-+                                    response.read()
-+                                    last_error = _gemini_http_error(response)
-+                                    if response.status_code == 403 and _is_endpoint_service_disabled(response):
-+                                        break
-+                                    if response.status_code not in {400, 404, 429, 500, 502, 503, 504}:
-+                                        raise last_error
-+                                    if (
-+                                        _is_short_antigravity_capacity_error(last_error)
-+                                        and capacity_attempt + 1 < ANTIGRAVITY_CAPACITY_RETRY_ATTEMPTS
-+                                    ):
-+                                        _push_antigravity_capacity_pacing(
-+                                            effective_model,
-+                                            float(getattr(last_error, "retry_after", 0.0) or 0.0),
-+                                        )
-+                                        continue
-+                                    if use_credits or _is_google_one_ai_credit_fallback_error(last_error):
-+                                        break
-                                     raise last_error
--                                if use_credits or _is_google_one_ai_credit_fallback_error(last_error):
--                                    continue
--                                raise last_error
--                            tool_call_counter: List[int] = [0]
--                            for event in _iter_sse_events(response):
--                                for chunk in _translate_stream_event(event, model, tool_call_counter):
--                                    yield chunk
--                            return
--                    except httpx.HTTPError as exc:
--                        last_error = CodeAssistError(
--                            f"Antigravity streaming request failed for {effective_model}: {exc}",
--                            code="antigravity_stream_error",
--                        )
--                        continue
-+                                tool_call_counter: List[int] = [0]
-+                                for event in _iter_sse_events(response):
-+                                    for chunk in _translate_stream_event(event, model, tool_call_counter):
-+                                        yield chunk
-+                                return
-+                        except httpx.HTTPError as exc:
-+                            last_error = CodeAssistError(
-+                                f"Antigravity streaming request failed for {effective_model}: {exc}",
-+                                code="antigravity_stream_error",
-+                            )
-+                            break
-             if last_error:
-                 raise last_error
- 
-diff --git a/tests/agent/test_google_antigravity_adapter.py b/tests/agent/test_google_antigravity_adapter.py
-index 48cd645..df17e53 100644
---- a/tests/agent/test_google_antigravity_adapter.py
-+++ b/tests/agent/test_google_antigravity_adapter.py
-@@ -94,6 +94,42 @@ def test_google_one_ai_credit_fallback_only_for_capacity_errors():
-     assert checker(quota) is False
- 
- 
-+def test_capacity_pacing_defaults_only_for_burst_limited_models(monkeypatch):
-+    monkeypatch.delenv("HERMES_ANTIGRAVITY_CAPACITY_PACING_SECONDS", raising=False)
-+    interval = getattr(ag, "_antigravity_capacity_pacing_interval")
++def _patch_antigravity_flow(monkeypatch, *, logged_in=True):
++    import hermes_cli.auth as auth_mod
 +
-+    assert interval("claude-opus-4-6-thinking") == getattr(ag, "ANTIGRAVITY_DEFAULT_CAPACITY_PACING_SECONDS")
-+    assert interval("gpt-oss-120b-medium") == getattr(ag, "ANTIGRAVITY_DEFAULT_CAPACITY_PACING_SECONDS")
-+    assert interval("gemini-3.1-pro-high") == 0.0
-+
-+
-+def test_capacity_pacing_interval_can_be_overridden(monkeypatch):
-+    monkeypatch.setenv("HERMES_ANTIGRAVITY_CAPACITY_PACING_SECONDS", "0")
-+
-+    assert getattr(ag, "_antigravity_capacity_pacing_interval")("claude-opus-4-6-thinking") == 0.0
-+
-+
-+def test_short_antigravity_capacity_errors_are_internal_retryable():
-+    checker = getattr(ag, "_is_short_antigravity_capacity_error")
-+    short = ag.CodeAssistError(
-+        "You have exhausted your capacity on this model",
-+        code="code_assist_rate_limited",
-+        status_code=429,
-+        retry_after=1.2,
-+        details={"status": "RESOURCE_EXHAUSTED", "message": "You have exhausted your capacity"},
++    status = {
++        "logged_in": logged_in,
++        "email": "user@example.com" if logged_in else "",
++        "project_id": "test-project" if logged_in else "",
++    }
++    monkeypatch.setattr(auth_mod, "get_antigravity_auth_status", lambda: status)
++    monkeypatch.setattr(
++        auth_mod,
++        "resolve_antigravity_runtime_credentials",
++        lambda force_refresh=False: {
++            "provider": "google-antigravity",
++            "api_key": "test-token",
++            "base_url": "cloudcode-pa://antigravity",
++            "project_id": "test-project",
++        },
 +    )
-+    long = ag.CodeAssistError(
-+        "You have exhausted your capacity on this model",
-+        code="code_assist_rate_limited",
-+        status_code=429,
-+        retry_after=3600,
-+        details={"status": "RESOURCE_EXHAUSTED", "message": "You have exhausted your capacity"},
++    monkeypatch.setattr(auth_mod, "_prompt_model_selection", lambda models, current_model="": "gemini-3.1-pro-high")
++    save_model = Mock()
++    update_provider = Mock()
++    monkeypatch.setattr(auth_mod, "_save_model_choice", save_model)
++    monkeypatch.setattr(auth_mod, "_update_config_for_provider", update_provider)
++    return save_model, update_provider
++
++
++def test_google_antigravity_model_flow_reuses_existing_login(monkeypatch):
++    from agent import google_antigravity_oauth
++    from hermes_cli.main import _model_flow_google_antigravity
++
++    save_model, update_provider = _patch_antigravity_flow(monkeypatch, logged_in=True)
++    start_oauth = Mock()
++    monkeypatch.setattr(google_antigravity_oauth, "start_oauth_flow", start_oauth)
++    monkeypatch.setattr("builtins.input", _InputSeq(["y", "1"]))
++    monkeypatch.setattr("builtins.print", lambda *a, **k: None)
++
++    _model_flow_google_antigravity({}, current_model="")
++
++    start_oauth.assert_not_called()
++    save_model.assert_called_once_with("gemini-3.1-pro-high")
++    update_provider.assert_called_once()
++
++
++def test_google_antigravity_model_flow_can_force_new_login(monkeypatch):
++    from agent import google_antigravity_oauth
++    from hermes_cli.main import _model_flow_google_antigravity
++
++    save_model, update_provider = _patch_antigravity_flow(monkeypatch, logged_in=True)
++    start_oauth = Mock()
++    monkeypatch.setattr(google_antigravity_oauth, "resolve_project_id_from_env", lambda: "env-project")
++    monkeypatch.setattr(google_antigravity_oauth, "start_oauth_flow", start_oauth)
++    monkeypatch.setattr("builtins.input", _InputSeq(["y", "2"]))
++    monkeypatch.setattr("builtins.print", lambda *a, **k: None)
++
++    _model_flow_google_antigravity({}, current_model="")
++
++    start_oauth.assert_called_once_with(force_relogin=True, project_id="env-project")
++    save_model.assert_called_once_with("gemini-3.1-pro-high")
++    update_provider.assert_called_once()
++
++
++def test_google_antigravity_model_flow_logs_in_when_missing_credentials(monkeypatch):
++    from agent import google_antigravity_oauth
++    from hermes_cli.main import _model_flow_google_antigravity
++
++    _patch_antigravity_flow(monkeypatch, logged_in=False)
++    start_oauth = Mock()
++    monkeypatch.setattr(google_antigravity_oauth, "resolve_project_id_from_env", lambda: "")
++    monkeypatch.setattr(google_antigravity_oauth, "start_oauth_flow", start_oauth)
++    monkeypatch.setattr("builtins.input", _InputSeq(["y"]))
++    monkeypatch.setattr("builtins.print", lambda *a, **k: None)
++
++    _model_flow_google_antigravity({}, current_model="")
++
++    start_oauth.assert_called_once_with(force_relogin=True, project_id="")
+diff --git a/tests/tools/test_clarify_tool_schema.py b/tests/tools/test_clarify_tool_schema.py
+new file mode 100644
+index 000000000..57629d745
+--- /dev/null
++++ b/tests/tools/test_clarify_tool_schema.py
+@@ -0,0 +1,33 @@
++import json
++
++from tools.clarify_tool import CLARIFY_SCHEMA
++from tools.registry import registry
++
++
++def test_clarify_schema_uses_choices_not_options():
++    params = CLARIFY_SCHEMA["parameters"]
++
++    assert "choices" in params["properties"]
++    assert "options" not in params["properties"]
++    assert params["required"] == ["question"]
++    assert "Do not use an `options`" in CLARIFY_SCHEMA["description"]
++
++
++def test_clarify_handler_accepts_legacy_options_alias():
++    captured = {}
++
++    def callback(question, choices):
++        captured["question"] = question
++        captured["choices"] = choices
++        return "B"
++
++    result = registry.dispatch(
++        "clarify",
++        {"question": "Pick one", "options": ["A", "B"]},
++        callback=callback,
 +    )
 +
-+    assert checker(short) is True
-+    assert checker(long) is False
-+
-+
- def test_antigravity_20_ui_models_have_backend_fallbacks():
-     candidates = getattr(ag, "_antigravity_model_candidates")
- 
++    payload = json.loads(result)
++    assert payload["user_response"] == "B"
++    assert payload["choices_offered"] == ["A", "B"]
++    assert captured == {"question": "Pick one", "choices": ["A", "B"]}

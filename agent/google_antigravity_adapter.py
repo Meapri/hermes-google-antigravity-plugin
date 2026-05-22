@@ -332,17 +332,17 @@ def _apply_antigravity_request_transforms(request: Dict[str, Any], *, model: str
 def _antigravity_google_one_ai_credits_mode() -> str:
     """How to use Google One AI/Ultra credits for Antigravity requests.
 
-    Default to ``always`` to match Antigravity app/CLI behavior: when the user
-    has an AI/Ultra subscription, Cloud Code PA requests must opt in with
+    Default to ``auto``: when loadCodeAssist reports a Google One AI paid plan
+    (Plus/Pro/Ultra) with usable credits, Cloud Code PA requests opt in with
     ``enabledCreditTypes=["GOOGLE_ONE_AI"]`` or the backend evaluates only the
     smaller raw Code Assist bucket and can return quota exhausted while the
-    Antigravity app still answers.  Users who specifically want to burn the raw
-    base bucket before monthly AI credits can set
-    ``HERMES_ANTIGRAVITY_GOOGLE_ONE_AI_CREDITS=fallback``; ``0``/``off`` keeps
-    the legacy no-credit behavior for diagnostics.
+    Antigravity app still answers. Users can force this with ``always``, burn
+    the raw base bucket first with ``fallback``, or disable it with ``0``/``off``.
     """
 
-    value = os.getenv("HERMES_ANTIGRAVITY_GOOGLE_ONE_AI_CREDITS", "always").strip().lower()
+    value = os.getenv("HERMES_ANTIGRAVITY_GOOGLE_ONE_AI_CREDITS", "auto").strip().lower()
+    if value in {"", "auto", "detect", "detected"}:
+        return "auto"
     if value in {"1", "true", "yes", "on", "always", "force"}:
         return "always"
     if value in {"0", "false", "no", "off", "never", "disabled"}:
@@ -350,12 +350,23 @@ def _antigravity_google_one_ai_credits_mode() -> str:
     return "fallback"
 
 
-def _antigravity_credit_attempts() -> List[bool]:
+def _context_has_google_one_ai_entitlement(ctx: Optional[ProjectContext]) -> bool:
+    if ctx is None:
+        return False
+    if getattr(ctx, "has_google_one_ai_credits", False):
+        return True
+    tier = f"{getattr(ctx, 'paid_tier_id', '')} {getattr(ctx, 'paid_tier_name', '')} {getattr(ctx, 'tier_id', '')}".lower()
+    return bool(tier and any(marker in tier for marker in ("google ai plus", "google ai pro", "google ai ultra", "g1-plus", "g1-pro", "g1-ultra")))
+
+
+def _antigravity_credit_attempts(ctx: Optional[ProjectContext] = None) -> List[bool]:
     mode = _antigravity_google_one_ai_credits_mode()
     if mode == "always":
         return [True]
     if mode == "never":
         return [False]
+    if mode == "auto":
+        return [True] if _context_has_google_one_ai_entitlement(ctx) else [False]
     return [False, True]
 
 
@@ -621,27 +632,53 @@ class GoogleAntigravityClient(GeminiCloudCodeClient):
         )
         managed_project_id = (creds.managed_project_id if creds else "") or ""
         tier_id = ""
+        tier_name = ""
+        paid_tier_id = ""
+        paid_tier_name = ""
+        credit_amount = 0
+        minimum_credit_amount = 0
+        has_google_one_ai_credits = False
         source = "antigravity"
-        if not project_id:
-            try:
-                info = load_code_assist(access_token, user_agent_model=model, client_profile="antigravity")
-                project_id = info.cloudaicompanion_project
-                tier_id = info.current_tier_id
-                managed_project_id = project_id if tier_id == FREE_TIER_ID else ""
-                if project_id:
-                    google_antigravity_oauth.update_project_ids(
-                        project_id=project_id,
-                        managed_project_id=managed_project_id,
-                    )
-                    source = "discovered"
-            except Exception:
-                # Let the actual completion request surface the backend error;
-                # project discovery is an optimization for fresh logins.
-                pass
+        try:
+            # Always probe loadCodeAssist, even when a project is already stored,
+            # because Google One plan entitlements live in paidTier and currentTier
+            # can remain free-tier for Plus/Pro/Ultra subscribers.
+            info = load_code_assist(
+                access_token,
+                project_id=project_id,
+                user_agent_model=model,
+                client_profile="antigravity",
+            )
+            project_id = project_id or info.cloudaicompanion_project
+            tier_id = info.effective_tier_id or info.current_tier_id
+            tier_name = info.effective_tier_name
+            paid_tier_id = info.paid_tier_id
+            paid_tier_name = info.paid_tier_name
+            credit_amount = info.google_one_ai_credit_amount
+            minimum_credit_amount = info.google_one_ai_minimum_credit_amount
+            has_google_one_ai_credits = info.has_google_one_ai_credits
+            managed_project_id = project_id if tier_id == FREE_TIER_ID else ""
+            if project_id:
+                google_antigravity_oauth.update_project_ids(
+                    project_id=project_id,
+                    managed_project_id=managed_project_id,
+                )
+                source = "discovered"
+        except Exception:
+            # Let the actual completion request surface the backend error; cached
+            # project ids can still work, but plan-specific credit routing will
+            # only be automatic after loadCodeAssist succeeds.
+            pass
         self._project_context = ProjectContext(
             project_id=project_id,
             managed_project_id=managed_project_id,
             tier_id=tier_id,
+            tier_name=tier_name,
+            paid_tier_id=paid_tier_id,
+            paid_tier_name=paid_tier_name,
+            google_one_ai_credit_amount=credit_amount,
+            google_one_ai_minimum_credit_amount=minimum_credit_amount,
+            has_google_one_ai_credits=has_google_one_ai_credits,
             source=source,
         )
         return self._project_context
@@ -706,7 +743,7 @@ class GoogleAntigravityClient(GeminiCloudCodeClient):
                 use_google_one_ai_credits=use_google_one_ai_credits,
             )
 
-        credit_attempts = _antigravity_credit_attempts()
+        credit_attempts = _antigravity_credit_attempts(ctx)
         if stream:
             wrapped_candidates = [
                 (candidate, build_wrapped(candidate, use_google_one_ai_credits=use_credits), use_credits)
