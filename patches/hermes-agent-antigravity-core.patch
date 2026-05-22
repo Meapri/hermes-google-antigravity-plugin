@@ -805,7 +805,7 @@ index 3adffabb4..3491fa6cd 100644
 +            "source": "google-antigravity-oauth",
 +            "expires_at_ms": 1775640710946,
 +            "email": "user@example.com",
-+            "project_id": "rising-fact-p41fc",
++            "project_id": "test-project",
 +        },
 +    )
 +
@@ -836,15 +836,15 @@ index 3adffabb4..3491fa6cd 100644
 +    assert "no Gemini CLI dependency" in entry.tui_desc
 +    assert _PROVIDER_LABELS["google-antigravity"] == "Google Antigravity (OAuth)"
 +    assert _PROVIDER_MODELS["google-antigravity"] == [
-+        "gemini-3.5-flash",
-+        "gemini-3.1-pro",
++        "gemini-3.5-flash-high",
++        "gemini-3.5-flash-medium",
++        "gemini-3.1-pro-high",
++        "gemini-3.1-pro-low",
++        "claude-sonnet-4-6-thinking",
++        "claude-opus-4-6-thinking",
++        "gpt-oss-120b-medium",
 +        "gemini-3-flash",
 +        "claude-sonnet-4-6",
-+        "claude-opus-4-6",
-+        "claude-opus-4-6-thinking-low",
-+        "claude-opus-4-6-thinking-medium",
-+        "claude-opus-4-6-thinking-high",
-+        "gpt-oss-120b",
 +    ]
 +
 +

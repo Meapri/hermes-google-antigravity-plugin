@@ -26,7 +26,7 @@ from agent.gemini_cloudcode_adapter import (
     build_gemini_request,
 )
 from agent.gemini_schema import sanitize_gemini_tool_parameters
-from agent.google_code_assist import CodeAssistError, ProjectContext
+from agent.google_code_assist import CodeAssistError, ProjectContext, FREE_TIER_ID, load_code_assist
 
 MARKER_BASE_URL = google_antigravity_oauth.MARKER_BASE_URL
 ANTIGRAVITY_ENDPOINT_DAILY = "https://daily-cloudcode-pa.sandbox.googleapis.com"
@@ -496,11 +496,29 @@ class GoogleAntigravityClient(GeminiCloudCodeClient):
             or google_antigravity_oauth.resolve_project_id_from_env()
         )
         managed_project_id = (creds.managed_project_id if creds else "") or ""
+        tier_id = ""
+        source = "antigravity"
+        if not project_id:
+            try:
+                info = load_code_assist(access_token, user_agent_model=model)
+                project_id = info.cloudaicompanion_project
+                tier_id = info.current_tier_id
+                managed_project_id = project_id if tier_id == FREE_TIER_ID else ""
+                if project_id:
+                    google_antigravity_oauth.update_project_ids(
+                        project_id=project_id,
+                        managed_project_id=managed_project_id,
+                    )
+                    source = "discovered"
+            except Exception:
+                # Let the actual completion request surface the backend error;
+                # project discovery is an optimization for fresh logins.
+                pass
         self._project_context = ProjectContext(
             project_id=project_id,
             managed_project_id=managed_project_id,
-            tier_id="",
-            source="antigravity",
+            tier_id=tier_id,
+            source=source,
         )
         return self._project_context
 

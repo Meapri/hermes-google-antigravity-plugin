@@ -100,7 +100,11 @@ hermes config set model.base_url cloudcode-pa://antigravity
 hermes config set model.default gemini-3.1-pro-high
 ```
 
-Optional project override:
+Project handling:
+
+The plugin does not hard-code a default project. Antigravity/Code Assist projects are account-specific, so the runtime discovers the account's `cloudaicompanionProject` with `loadCodeAssist` after OAuth and persists it in `$HERMES_HOME/auth/google_antigravity.json`.
+
+If discovery fails or you need to force a paid/workspace project, override it explicitly:
 
 ```bash
 export HERMES_ANTIGRAVITY_PROJECT_ID=your-google-cloud-project-id

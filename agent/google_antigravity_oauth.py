@@ -44,7 +44,10 @@ ANTIGRAVITY_SCOPES = (
 )
 ANTIGRAVITY_REDIRECT_PORT = 51121
 ANTIGRAVITY_CALLBACK_PATH = "/oauth-callback"
-ANTIGRAVITY_DEFAULT_PROJECT_ID = "rising-fact-p41fc"
+# Do not hard-code a fallback project: Antigravity assigns account-specific
+# Cloud Code projects. We discover and persist the account's project after
+# OAuth via loadCodeAssist instead of reusing a stale project from another login.
+ANTIGRAVITY_DEFAULT_PROJECT_ID = ""
 
 _profile_lock = threading.RLock()
 
@@ -132,12 +135,27 @@ def start_oauth_flow(
     print("⚠️  Google Antigravity OAuth is unofficial. It may violate Google/Antigravity terms")
     print("   or cause account/API access issues. Continue only if you accept that risk.")
     with _antigravity_profile():
-        return google_oauth.start_oauth_flow(
+        creds = google_oauth.start_oauth_flow(
             force_relogin=force_relogin,
             open_browser=open_browser,
             callback_wait_seconds=callback_wait_seconds,
             project_id=project_id,
         )
+    if not project_id:
+        try:
+            from agent.google_code_assist import FREE_TIER_ID, load_code_assist
+
+            info = load_code_assist(creds.access_token)
+            discovered_project = info.cloudaicompanion_project
+            if discovered_project:
+                managed_project = discovered_project if info.current_tier_id == FREE_TIER_ID else ""
+                update_project_ids(project_id=discovered_project, managed_project_id=managed_project)
+                creds.project_id = discovered_project
+                creds.managed_project_id = managed_project
+        except Exception:
+            # Login should still succeed even if project discovery is temporarily unavailable.
+            pass
+    return creds
 
 
 def update_project_ids(project_id: str = "", managed_project_id: str = "") -> None:
