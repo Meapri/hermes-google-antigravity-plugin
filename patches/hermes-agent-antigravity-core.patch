@@ -1008,3 +1008,4 @@ index 3e61d1b03..c18b7ef75 100644
      raw_buckets = resp.get("buckets") or []
      buckets: List[QuotaBucket] = []
      if not isinstance(raw_buckets, list):
+# Local Hermes Ultra/Google One AI credits fix
