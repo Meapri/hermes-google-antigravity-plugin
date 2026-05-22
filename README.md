@@ -22,19 +22,19 @@ This integration intentionally does not depend on Gemini CLI.
 - Aliases: `antigravity`, `antigravity-oauth`
 - Base URL marker: `cloudcode-pa://antigravity`
 
-Curated model IDs:
+Curated model IDs (matching the Antigravity UI model picker):
 
-- `gemini-3.5-flash-high`
-- `gemini-3.5-flash-medium`
-- `gemini-3.1-pro-high`
-- `gemini-3.1-pro-low`
-- `claude-sonnet-4-6-thinking`
-- `claude-opus-4-6-thinking`
-- `gpt-oss-120b-medium`
-- `gemini-3-flash`
-- `claude-sonnet-4-6`
+- `gemini-3.5-flash-high` — Gemini 3.5 Flash (High)
+- `gemini-3.5-flash-low` — Gemini 3.5 Flash (Medium)
+- `gemini-3.1-pro-high` — Gemini 3.1 Pro (High)
+- `gemini-3.1-pro-low` — Gemini 3.1 Pro (Low)
+- `claude-sonnet-4-6-thinking` — Claude Sonnet 4.6 (Thinking)
+- `claude-sonnet-4-6` — Claude Sonnet 4.6
+- `claude-opus-4-6-thinking` — Claude Opus 4.6 (Thinking)
+- `claude-opus-4-6` — Claude Opus 4.6
+- `gpt-oss-120b-medium` — GPT-OSS 120B (Medium)
 
-The adapter preserves Antigravity UI tier semantics for Gemini Pro suffixes such as `-high` and `-low` by translating them into Gemini `thinkingLevel` settings when needed.
+Display-friendly IDs like `gemini-3.5-flash-high` or `gemini-3.1-pro-high` are mapped internally to the real Antigravity backend IDs (e.g. `gemini-3-flash-agent`, `gemini-3.1-pro-low`) and get the appropriate `thinkingConfig.thinkingLevel` (high/medium/low) injected automatically. Claude thinking is likewise controlled by the model name: names containing `thinking` get `include_thoughts: true` injected into the request.
 
 ## Install
 
@@ -112,7 +112,7 @@ $HERMES_HOME/auth/google_antigravity.json
 ```bash
 hermes config set model.provider google-antigravity
 hermes config set model.base_url cloudcode-pa://antigravity
-hermes config set model.default gemini-3.1-pro-high
+hermes config set model.default gemini-3.5-flash-high
 ```
 
 Project handling:

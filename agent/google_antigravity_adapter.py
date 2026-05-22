@@ -56,22 +56,35 @@ _ANTIGRAVITY_CAPACITY_NEXT_ALLOWED_AT: Dict[str, float] = {}
 
 
 # Antigravity 2.0's UI labels do not always match the backend model ID accepted
-# by the Cloud Code PA v1internal generateContent endpoint. Keep the requested
-# model first so newly enabled upstream IDs start working automatically, then
-# fall back to IDs verified against Antigravity 2.0.2 / PROD in May 2026.
+# by the Cloud Code PA v1internal generateContent endpoint.  Map UI labels to
+# the canonical backend ID directly (first entry), with additional fallbacks
+# after that.  Thinking tier (high/medium/low) is controlled via
+# ``thinkingConfig`` in the request body, NOT by the model ID — only the base
+# backend ID is sent.  Verified against cloudcode-pa PROD, May 2026.
 ANTIGRAVITY_MODEL_FALLBACKS: Dict[str, List[str]] = {
-    "gemini-3.5-flash-high": ["gemini-3-flash"],
+    # Gemini Flash — Antigravity exposes friendly 3.5 Flash labels, but the
+    # high tier backend ID is the internal-looking "gemini-3-flash-agent".
+    "gemini-3.5-flash-high": ["gemini-3-flash-agent"],
     "gemini-3.5-flash-medium": ["gemini-3-flash"],
-    "gemini-3.5-flash": ["gemini-3-flash"],
+    "gemini-3.5-flash-low": ["gemini-3-flash"],
+    "gemini-3.5-flash": ["gemini-3-flash-agent"],
     "gemini-3-flash-high": ["gemini-3-flash"],
     "gemini-3-flash-medium": ["gemini-3-flash"],
+    "gemini-3-flash-low": ["gemini-3-flash"],
+    # Gemini Pro — backend only knows "gemini-3.1-pro-low"; tier via thinkingConfig
     "gemini-3.1-pro-high": ["gemini-3.1-pro-low"],
+    "gemini-3.1-pro-medium": ["gemini-3.1-pro-low"],
     "gemini-3.1-pro": ["gemini-3.1-pro-low"],
+    # Claude — backend only knows "claude-sonnet-4-6" and "claude-opus-4-6-thinking".
+    # Thinking is controlled by thinkingConfig in the request body (like Gemini),
+    # keyed off _is_claude_thinking_model() checking for "thinking" in the name.
     "claude-sonnet-4-6-thinking": ["claude-sonnet-4-6"],
     "claude-sonnet-4.6-thinking": ["claude-sonnet-4-6"],
     "claude-sonnet-4.6": ["claude-sonnet-4-6"],
     "claude-opus-4.6-thinking": ["claude-opus-4-6-thinking"],
     "claude-opus-4.6": ["claude-opus-4-6-thinking"],
+    "claude-opus-4-6": ["claude-opus-4-6-thinking"],
+    # GPT
     "gpt-oss-120b": ["gpt-oss-120b-medium"],
     "openai/gpt-oss-120b": ["gpt-oss-120b-medium"],
 }
@@ -469,32 +482,42 @@ def _wrap_antigravity_request(
 
 
 def _antigravity_model_candidates(model: str) -> List[str]:
-    """Return backend model IDs to try for an Antigravity UI/catalog model."""
+    """Return backend model IDs to try for an Antigravity UI/catalog model.
+
+    UI labels like ``gemini-3.1-pro-high`` or ``gemini-3.5-flash-high`` do not
+    exist as backend model IDs — the backend only accepts the base ID (e.g.
+    ``gemini-3.1-pro-low``, ``gemini-3-flash``).  When a mapping exists in
+    ANTIGRAVITY_MODEL_FALLBACKS, skip the UI label entirely and send only the
+    known backend IDs.  When no mapping exists, the model is assumed to be a
+    raw backend ID and is sent as-is.
+    """
 
     requested = str(model or "gemini-3-flash")
     fallbacks = ANTIGRAVITY_MODEL_FALLBACKS.get(requested.lower(), [])
-    candidates: List[str] = []
-    for candidate in [requested, *fallbacks]:
-        if candidate and candidate not in candidates:
-            candidates.append(candidate)
-    return candidates or ["gemini-3-flash"]
+    if fallbacks:
+        # The UI label is NOT a valid backend ID — send only verified IDs.
+        return list(dict.fromkeys(fallbacks))  # dedupe, preserve order
+    return [requested]
 
 
 def _antigravity_ui_thinking_config(model: str) -> Optional[Dict[str, Any]]:
     """Infer Gemini thinkingConfig from Antigravity UI tier suffixes.
 
-    Antigravity's picker exposes IDs such as ``gemini-3.1-pro-high`` and
-    ``gemini-3.1-pro-low``. The backend accepts those model IDs, but it does
-    not reliably infer the requested thinking tier from the suffix alone. Add
-    the matching Gemini ``thinkingLevel`` unless the caller already supplied a
-    more explicit thinking config.
+    Antigravity's picker exposes IDs such as ``gemini-3.1-pro-high``,
+    ``gemini-3.5-flash-high``, etc.  The backend model ID does not carry the
+    tier — it must be set via ``thinkingConfig.thinkingLevel`` in the request
+    body.  This function reads the ``-high`` / ``-medium`` / ``-low`` suffix
+    from the *original UI model name* (before backend mapping) and returns the
+    corresponding thinkingConfig dict.
     """
 
     normalized = str(model or "").strip().lower()
-    if not normalized.startswith("gemini-") or "pro" not in normalized:
+    if not normalized.startswith("gemini-"):
         return None
     if normalized.endswith("-high"):
         return {"thinkingLevel": "high"}
+    if normalized.endswith("-medium"):
+        return {"thinkingLevel": "medium"}
     if normalized.endswith("-low"):
         return {"thinkingLevel": "low"}
     return None
@@ -837,7 +860,11 @@ class GoogleAntigravityClient(GeminiCloudCodeClient):
                                         continue
                                     if use_credits or _is_google_one_ai_credit_fallback_error(last_error):
                                         break
-                                    raise last_error
+                                    # 404/400 → fall through to next
+                                    # candidate instead of raising
+                                    # immediately (mirrors non-stream
+                                    # fallback logic).
+                                    break
                                 tool_call_counter: List[int] = [0]
                                 for event in _iter_sse_events(response):
                                     for chunk in _translate_stream_event(event, model, tool_call_counter):
