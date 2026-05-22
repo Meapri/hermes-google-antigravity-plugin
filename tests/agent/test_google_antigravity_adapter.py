@@ -1,0 +1,202 @@
+from agent import google_antigravity_adapter as ag
+
+
+def test_antigravity_headers_use_supported_version_without_gemini_cli_identity_headers(monkeypatch):
+    monkeypatch.delenv("HERMES_ANTIGRAVITY_VERSION", raising=False)
+    monkeypatch.delenv("ANTIGRAVITY_VERSION", raising=False)
+    getattr(ag, "_ANTIGRAVITY_VERSION_CACHE").update({"version": "2.0.1", "fetched_at": 0.0})
+
+    headers = ag.get_antigravity_headers()
+
+    assert "User-Agent" in headers
+    assert "Antigravity/2.0.1" in headers["User-Agent"]
+    assert "Antigravity/1.18.3" not in headers["User-Agent"]
+    assert "X-Goog-Api-Client" not in headers
+    assert "Client-Metadata" not in headers
+
+
+def test_antigravity_runtime_endpoints_do_not_include_staging_sandboxes():
+    endpoints = getattr(ag, "ANTIGRAVITY_ENDPOINT_FALLBACKS")
+
+    assert endpoints == (getattr(ag, "ANTIGRAVITY_ENDPOINT_PROD"),)
+    assert getattr(ag, "ANTIGRAVITY_ENDPOINT_DAILY") not in endpoints
+    assert getattr(ag, "ANTIGRAVITY_ENDPOINT_AUTOPUSH") not in endpoints
+
+
+def test_antigravity_version_can_be_overridden_for_fast_upgrades(monkeypatch):
+    monkeypatch.setenv("HERMES_ANTIGRAVITY_VERSION", "2.0.2")
+
+    headers = ag.get_antigravity_headers()
+
+    assert "Antigravity/2.0.2" in headers["User-Agent"]
+
+
+def test_wrap_antigravity_request_uses_agent_body_metadata():
+    wrapped = getattr(ag, "_wrap_antigravity_request")(
+        project_id="test-project",
+        model="gemini-3-flash",
+        request={"contents": []},
+    )
+
+    assert wrapped["project"] == "test-project"
+    assert wrapped["model"] == "gemini-3-flash"
+    assert wrapped["requestType"] == "agent"
+    assert wrapped["userAgent"] == "antigravity"
+    assert str(wrapped["requestId"]).startswith("agent-")
+    assert wrapped["request"] == {"contents": []}
+
+
+def test_antigravity_20_ui_models_have_backend_fallbacks():
+    candidates = getattr(ag, "_antigravity_model_candidates")
+
+    assert candidates("gemini-3.5-flash-high") == ["gemini-3.5-flash-high", "gemini-3-flash"]
+    assert candidates("gemini-3.5-flash-medium") == ["gemini-3.5-flash-medium", "gemini-3-flash"]
+    assert candidates("gemini-3.1-pro-high") == ["gemini-3.1-pro-high", "gemini-3.1-pro-low"]
+    assert candidates("gemini-3.1-pro-low") == ["gemini-3.1-pro-low"]
+    assert candidates("claude-sonnet-4-6-thinking") == ["claude-sonnet-4-6-thinking", "claude-sonnet-4-6"]
+    assert candidates("claude-opus-4-6-thinking") == ["claude-opus-4-6-thinking"]
+    assert candidates("gpt-oss-120b") == ["gpt-oss-120b", "gpt-oss-120b-medium"]
+
+
+def test_gemini_31_pro_ui_tiers_infer_thinking_level_and_token_floor():
+    merge = getattr(ag, "_merge_antigravity_thinking_config")
+    max_tokens = getattr(ag, "_antigravity_effective_max_tokens")
+
+    assert merge("gemini-3.1-pro-high", None) == {"thinkingLevel": "high"}
+    assert merge("gemini-3.1-pro-low", None) == {"thinkingLevel": "low"}
+    assert merge("gemini-3.1-pro-high", {"includeThoughts": True}) == {
+        "thinkingLevel": "high",
+        "includeThoughts": True,
+    }
+    assert merge("gemini-3.1-pro-high", {"thinkingLevel": "low"}) == {"thinkingLevel": "low"}
+    assert max_tokens("gemini-3.1-pro-high", 16) == getattr(ag, "GEMINI_31_PRO_MIN_OUTPUT_TOKENS")
+    assert max_tokens("gemini-3.1-pro-low", 16) == getattr(ag, "GEMINI_31_PRO_MIN_OUTPUT_TOKENS")
+    assert max_tokens("gemini-3.5-flash-high", 16) == 16
+
+
+def test_claude_antigravity_transform_normalizes_tools_and_system_instruction():
+    request = {
+        "model": "claude-sonnet-4.5",
+        "system_instruction": "User system prompt",
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "bad tool.name",
+                    "description": "Do work",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ],
+        "extra_body": {"cached_content": "legacy", "thinkingConfig": {"thinkingBudget": 1024}},
+    }
+
+    getattr(ag, "_apply_antigravity_request_transforms")(request, model="claude-sonnet-4.5")
+
+    assert "model" not in request
+    assert "extra_body" not in request
+    assert request["toolConfig"]["functionCallingConfig"]["mode"] == "VALIDATED"
+    declarations = request["tools"][0]["functionDeclarations"]
+    assert declarations[0]["name"] == "bad_tool_name"
+    assert declarations[0]["parameters"]["type"] == "object"
+    assert getattr(ag, "EMPTY_SCHEMA_PLACEHOLDER_NAME") in declarations[0]["parameters"]["properties"]
+    assert getattr(ag, "EMPTY_SCHEMA_PLACEHOLDER_NAME") in declarations[0]["parameters"]["required"]
+    system = request["systemInstruction"]
+    assert system["role"] == "user"
+    assert getattr(ag, "ANTIGRAVITY_SYSTEM_INSTRUCTION") in system["parts"][0]["text"]
+    assert "User system prompt" in system["parts"][0]["text"]
+    assert request["sessionId"].startswith("-")
+
+
+def test_claude_thinking_transform_sets_thinking_config_and_max_tokens():
+    request = {
+        "generationConfig": {"maxOutputTokens": 1024},
+        "tools": [{"functionDeclarations": [{"name": "read", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}}}]}],
+    }
+
+    getattr(ag, "_apply_antigravity_request_transforms")(
+        request,
+        model="claude-sonnet-4.5-thinking",
+        thinking_config={"thinkingBudget": 2048, "includeThoughts": True},
+    )
+
+    gen = request["generationConfig"]
+    assert gen["thinkingConfig"] == {"include_thoughts": True, "thinking_budget": 2048}
+    assert gen["maxOutputTokens"] == 64_000
+    assert request["tools"][0]["functionDeclarations"][0]["parameters"]["required"] == [getattr(ag, "EMPTY_SCHEMA_PLACEHOLDER_NAME")]
+    assert "Interleaved thinking is enabled" in request["systemInstruction"]["parts"][0]["text"]
+
+
+def test_claude_tool_schema_keeps_optional_only_objects_draft_compatible():
+    schema = getattr(ag, "_normalize_claude_schema")({
+        "type": "object",
+        "properties": {
+            "action": {"type": "string", "enum": ["send", "list"]},
+            "target": {"type": "string"},
+            "message": {"type": "string"},
+        },
+    })
+
+    assert schema["type"] == "object"
+    assert schema["required"] == [getattr(ag, "EMPTY_SCHEMA_PLACEHOLDER_NAME")]
+    assert getattr(ag, "EMPTY_SCHEMA_PLACEHOLDER_NAME") in schema["properties"]
+
+
+def test_claude_tool_schema_simplifies_mcp_union_items():
+    schema = getattr(ag, "_normalize_claude_schema")({
+        "type": "object",
+        "properties": {
+            "comments": {
+                "type": "array",
+                "items": {
+                    "anyOf": [
+                        {"type": "object", "properties": {"path": {"type": "string"}, "position": {"type": "number"}}, "required": ["path", "position"]},
+                        {"type": "object", "properties": {"path": {"type": "string"}, "line": {"type": "number"}}, "required": ["path", "line"]},
+                    ]
+                },
+            }
+        },
+        "required": ["comments"],
+    })
+
+    items = schema["properties"]["comments"]["items"]
+    assert "anyOf" not in items
+    assert items["type"] == "object"
+    assert "position" in items["properties"]
+
+
+def test_gpt_oss_transform_strips_proto_stringified_numeric_schema_constraints():
+    request = {
+        "tools": [
+            {
+                "functionDeclarations": [
+                    {
+                        "name": "clarify",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "question": {"type": "string", "minLength": 1},
+                                "choices": {
+                                    "type": "array",
+                                    "items": {"type": "string", "maxLength": 32},
+                                    "maxItems": 4,
+                                    "minItems": 1,
+                                },
+                            },
+                            "required": ["question"],
+                        },
+                    }
+                ]
+            }
+        ]
+    }
+
+    getattr(ag, "_apply_antigravity_request_transforms")(request, model="gpt-oss-120b")
+
+    params = request["tools"][0]["functionDeclarations"][0]["parameters"]
+    assert "minLength" not in params["properties"]["question"]
+    assert "maxItems" not in params["properties"]["choices"]
+    assert "minItems" not in params["properties"]["choices"]
+    assert "maxLength" not in params["properties"]["choices"]["items"]
+    assert params["properties"]["choices"]["type"] == "array"
+    assert params["required"] == ["question"]

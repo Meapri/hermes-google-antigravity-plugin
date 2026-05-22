@@ -1,0 +1,7 @@
+name: google-antigravity-provider
+kind: model-provider
+version: 0.1.0
+description: Google Antigravity OAuth provider for Hermes Agent
+provider: google-antigravity
+author: Meapri + Hermes Agent
+license: MIT
