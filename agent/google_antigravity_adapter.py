@@ -11,7 +11,7 @@ import os
 import re
 import time
 import uuid
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple, Union
 
 import httpx
 
@@ -48,6 +48,7 @@ ANTIGRAVITY_VERSION_URL = "https://antigravity-auto-updater-974169037036.us-cent
 ANTIGRAVITY_VERSION_CACHE_TTL_SECONDS = 6 * 60 * 60
 _ANTIGRAVITY_VERSION_CACHE: Dict[str, Any] = {"version": ANTIGRAVITY_VERSION_FALLBACK, "fetched_at": 0.0}
 GOOGLE_ONE_AI_CREDIT_TYPE = "GOOGLE_ONE_AI"
+
 
 # Antigravity 2.0's UI labels do not always match the backend model ID accepted
 # by the Cloud Code PA v1internal generateContent endpoint. Keep the requested
@@ -323,12 +324,56 @@ def _apply_antigravity_request_transforms(request: Dict[str, Any], *, model: str
     _append_system_text(request, ANTIGRAVITY_SYSTEM_INSTRUCTION, prepend=True, role="user")
     request["sessionId"] = str(request.get("sessionId") or f"-{uuid.uuid4()}")
 
-def _antigravity_google_one_ai_credits_enabled() -> bool:
-    value = os.getenv("HERMES_ANTIGRAVITY_GOOGLE_ONE_AI_CREDITS", "1").strip().lower()
-    return value not in {"0", "false", "no", "off"}
+def _antigravity_google_one_ai_credits_mode() -> str:
+    """How to use Google One AI/Ultra credits for Antigravity requests.
+
+    Default to ``fallback`` so the regular Antigravity/Claude quota is tried
+    first.  Only retry with monthly Google One AI credits after Google reports
+    capacity/quota exhaustion.  Users can still force legacy behavior with
+    ``HERMES_ANTIGRAVITY_GOOGLE_ONE_AI_CREDITS=always`` (or ``1``) or disable
+    credit fallback entirely with ``0``/``off``.
+    """
+
+    value = os.getenv("HERMES_ANTIGRAVITY_GOOGLE_ONE_AI_CREDITS", "fallback").strip().lower()
+    if value in {"1", "true", "yes", "on", "always", "force"}:
+        return "always"
+    if value in {"0", "false", "no", "off", "never", "disabled"}:
+        return "never"
+    return "fallback"
 
 
-def _wrap_antigravity_request(*, project_id: str, model: str, request: Dict[str, Any]) -> Dict[str, Any]:
+def _antigravity_credit_attempts() -> List[bool]:
+    mode = _antigravity_google_one_ai_credits_mode()
+    if mode == "always":
+        return [True]
+    if mode == "never":
+        return [False]
+    return [False, True]
+
+
+def _is_google_one_ai_credit_fallback_error(error: Optional[CodeAssistError]) -> bool:
+    if error is None:
+        return False
+    if getattr(error, "code", "") == "code_assist_capacity_exhausted":
+        return True
+    details = getattr(error, "details", {}) or {}
+    reason = str(details.get("reason") or "").upper()
+    status = str(details.get("status") or "").upper()
+    message = str(details.get("message") or error or "").lower()
+    return (
+        reason == "MODEL_CAPACITY_EXHAUSTED"
+        or (status == "RESOURCE_EXHAUSTED" and "capacity" in message)
+        or "exhausted your capacity" in message
+    )
+
+
+def _wrap_antigravity_request(
+    *,
+    project_id: str,
+    model: str,
+    request: Dict[str, Any],
+    use_google_one_ai_credits: bool = False,
+) -> Dict[str, Any]:
     wrapped = {
         "project": project_id,
         "model": model,
@@ -337,10 +382,7 @@ def _wrap_antigravity_request(*, project_id: str, model: str, request: Dict[str,
         "userAgent": "antigravity",
         "requestId": "agent-" + str(uuid.uuid4()),
     }
-    # Google One AI/Ultra credits are opt-in at the Cloud Code PA request layer.
-    # Without this field, Claude/third-party models can be rejected by the small
-    # standard request bucket even when the account has monthly Ultra credits.
-    if _antigravity_google_one_ai_credits_enabled():
+    if use_google_one_ai_credits:
         wrapped["enabledCreditTypes"] = [GOOGLE_ONE_AI_CREDIT_TYPE]
     return wrapped
 
@@ -512,7 +554,7 @@ class GoogleAntigravityClient(GeminiCloudCodeClient):
         source = "antigravity"
         if not project_id:
             try:
-                info = load_code_assist(access_token, user_agent_model=model)
+                info = load_code_assist(access_token, user_agent_model=model, client_profile="antigravity")
                 project_id = info.cloudaicompanion_project
                 tier_id = info.current_tier_id
                 managed_project_id = project_id if tier_id == FREE_TIER_ID else ""
@@ -572,7 +614,7 @@ class GoogleAntigravityClient(GeminiCloudCodeClient):
 
         model_candidates = _antigravity_model_candidates(model)
 
-        def build_wrapped(effective_model: str) -> Dict[str, Any]:
+        def build_wrapped(effective_model: str, *, use_google_one_ai_credits: bool = False) -> Dict[str, Any]:
             inner = build_gemini_request(
                 messages=messages or [],
                 tools=tools,
@@ -587,33 +629,47 @@ class GoogleAntigravityClient(GeminiCloudCodeClient):
             # aliases still get thinking/tool normalization even when the
             # backend model ID omits the label suffix.
             _apply_antigravity_request_transforms(inner, model=model, thinking_config=thinking_config)
-            return _wrap_antigravity_request(project_id=ctx.project_id, model=effective_model, request=inner)
+            return _wrap_antigravity_request(
+                project_id=ctx.project_id,
+                model=effective_model,
+                request=inner,
+                use_google_one_ai_credits=use_google_one_ai_credits,
+            )
 
+        credit_attempts = _antigravity_credit_attempts()
         if stream:
-            wrapped_candidates = [(candidate, build_wrapped(candidate)) for candidate in model_candidates]
+            wrapped_candidates = [
+                (candidate, build_wrapped(candidate, use_google_one_ai_credits=use_credits), use_credits)
+                for candidate in model_candidates
+                for use_credits in credit_attempts
+            ]
             return self._stream_completion(model=model, wrapped_candidates=wrapped_candidates, headers=headers)
 
         last_error: Optional[CodeAssistError] = None
         retry_statuses = {400, 404, 429, 500, 502, 503, 504}
         for effective_model in model_candidates:
-            wrapped = build_wrapped(effective_model)
-            for endpoint in ANTIGRAVITY_ENDPOINT_FALLBACKS:
-                url = f"{endpoint}/v1internal:generateContent"
-                response = self._http.post(url, json=wrapped, headers=headers)
-                if response.status_code == 200:
-                    try:
-                        payload = response.json()
-                    except ValueError as exc:
-                        raise CodeAssistError(
-                            f"Invalid JSON from Antigravity Code Assist: {exc}",
-                            code="antigravity_invalid_json",
-                        ) from exc
-                    return _translate_gemini_response(payload, model=model)
-                last_error = _gemini_http_error(response)
-                if response.status_code == 403 and _is_endpoint_service_disabled(response):
+            for use_credits in credit_attempts:
+                wrapped = build_wrapped(effective_model, use_google_one_ai_credits=use_credits)
+                for endpoint in ANTIGRAVITY_ENDPOINT_FALLBACKS:
+                    url = f"{endpoint}/v1internal:generateContent"
+                    response = self._http.post(url, json=wrapped, headers=headers)
+                    if response.status_code == 200:
+                        try:
+                            payload = response.json()
+                        except ValueError as exc:
+                            raise CodeAssistError(
+                                f"Invalid JSON from Antigravity Code Assist: {exc}",
+                                code="antigravity_invalid_json",
+                            ) from exc
+                        return _translate_gemini_response(payload, model=model)
+                    last_error = _gemini_http_error(response)
+                    if response.status_code == 403 and _is_endpoint_service_disabled(response):
+                        continue
+                    if response.status_code not in retry_statuses:
+                        break
+                if not use_credits and _is_google_one_ai_credit_fallback_error(last_error):
                     continue
-                if response.status_code not in retry_statuses:
-                    break
+                break
         raise last_error or CodeAssistError("Antigravity request failed", code="antigravity_request_failed")
 
     def _stream_completion(
@@ -622,15 +678,21 @@ class GoogleAntigravityClient(GeminiCloudCodeClient):
         model: str,
         headers: Dict[str, str],
         wrapped: Optional[Dict[str, Any]] = None,
-        wrapped_candidates: Optional[List[tuple[str, Dict[str, Any]]]] = None,
+        wrapped_candidates: Optional[Sequence[Union[Tuple[str, Dict[str, Any]], Tuple[str, Dict[str, Any], bool]]]] = None,
     ) -> Iterator[_GeminiStreamChunk]:
         stream_headers = dict(headers)
         stream_headers["Accept"] = "text/event-stream"
-        candidates = wrapped_candidates or [(model, wrapped or {})]
+        candidates: Sequence[Union[Tuple[str, Dict[str, Any]], Tuple[str, Dict[str, Any], bool]]]
+        candidates = wrapped_candidates or [(model, wrapped or {}, False)]
 
         def _generator() -> Iterator[_GeminiStreamChunk]:
             last_error: Optional[Exception] = None
-            for effective_model, wrapped_body in candidates:
+            for candidate in candidates:
+                if len(candidate) == 3:
+                    effective_model, wrapped_body, use_credits = candidate
+                else:
+                    effective_model, wrapped_body = candidate
+                    use_credits = False
                 for endpoint in ANTIGRAVITY_ENDPOINT_FALLBACKS:
                     url = f"{endpoint}/v1internal:streamGenerateContent?alt=sse"
                     try:
@@ -642,7 +704,9 @@ class GoogleAntigravityClient(GeminiCloudCodeClient):
                                     continue
                                 if response.status_code not in {400, 404, 429, 500, 502, 503, 504}:
                                     raise last_error
-                                continue
+                                if use_credits or _is_google_one_ai_credit_fallback_error(last_error):
+                                    continue
+                                raise last_error
                             tool_call_counter: List[int] = [0]
                             for event in _iter_sse_events(response):
                                 for chunk in _translate_stream_event(event, model, tool_call_counter):

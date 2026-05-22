@@ -31,7 +31,8 @@ def test_antigravity_version_can_be_overridden_for_fast_upgrades(monkeypatch):
     assert "Antigravity/2.0.2" in headers["User-Agent"]
 
 
-def test_wrap_antigravity_request_uses_agent_body_metadata():
+def test_wrap_antigravity_request_uses_agent_body_metadata(monkeypatch):
+    monkeypatch.delenv("HERMES_ANTIGRAVITY_GOOGLE_ONE_AI_CREDITS", raising=False)
     wrapped = getattr(ag, "_wrap_antigravity_request")(
         project_id="test-project",
         model="gemini-3-flash",
@@ -42,20 +43,55 @@ def test_wrap_antigravity_request_uses_agent_body_metadata():
     assert wrapped["model"] == "gemini-3-flash"
     assert wrapped["requestType"] == "agent"
     assert wrapped["userAgent"] == "antigravity"
-    assert wrapped["enabledCreditTypes"] == ["GOOGLE_ONE_AI"]
+    assert "enabledCreditTypes" not in wrapped
     assert str(wrapped["requestId"]).startswith("agent-")
     assert wrapped["request"] == {"contents": []}
 
 
-def test_google_one_ai_credits_can_be_disabled(monkeypatch):
-    monkeypatch.setenv("HERMES_ANTIGRAVITY_GOOGLE_ONE_AI_CREDITS", "0")
+def test_google_one_ai_credits_are_explicitly_opted_into():
     wrapped = getattr(ag, "_wrap_antigravity_request")(
         project_id="test-project",
         model="claude-opus-4-6-thinking",
         request={"contents": []},
+        use_google_one_ai_credits=True,
     )
 
-    assert "enabledCreditTypes" not in wrapped
+    assert wrapped["enabledCreditTypes"] == ["GOOGLE_ONE_AI"]
+
+
+def test_google_one_ai_credit_mode_defaults_to_fallback(monkeypatch):
+    monkeypatch.delenv("HERMES_ANTIGRAVITY_GOOGLE_ONE_AI_CREDITS", raising=False)
+
+    assert getattr(ag, "_antigravity_google_one_ai_credits_mode")() == "fallback"
+    assert getattr(ag, "_antigravity_credit_attempts")() == [False, True]
+
+
+def test_google_one_ai_credit_mode_can_force_or_disable(monkeypatch):
+    monkeypatch.setenv("HERMES_ANTIGRAVITY_GOOGLE_ONE_AI_CREDITS", "always")
+    assert getattr(ag, "_antigravity_credit_attempts")() == [True]
+
+    monkeypatch.setenv("HERMES_ANTIGRAVITY_GOOGLE_ONE_AI_CREDITS", "0")
+    assert getattr(ag, "_antigravity_credit_attempts")() == [False]
+
+
+def test_google_one_ai_credit_fallback_only_for_capacity_errors():
+    checker = getattr(ag, "_is_google_one_ai_credit_fallback_error")
+
+    capacity = ag.CodeAssistError(
+        "You have exhausted your capacity on this model",
+        code="code_assist_capacity_exhausted",
+        status_code=429,
+        details={"reason": "MODEL_CAPACITY_EXHAUSTED", "status": "RESOURCE_EXHAUSTED"},
+    )
+    quota = ag.CodeAssistError(
+        "unrelated quota exhausted",
+        code="code_assist_rate_limited",
+        status_code=429,
+        details={"reason": "OTHER_LIMIT", "status": "RESOURCE_EXHAUSTED"},
+    )
+
+    assert checker(capacity) is True
+    assert checker(quota) is False
 
 
 def test_antigravity_20_ui_models_have_backend_fallbacks():
