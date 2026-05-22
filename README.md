@@ -75,6 +75,20 @@ export HERMES_ANTIGRAVITY_CLIENT_ID='your-antigravity-oauth-client-id'
 export HERMES_ANTIGRAVITY_CLIENT_SECRET='your-antigravity-oauth-client-secret'
 ```
 
+If you want a new Hermes install to remember these values locally without committing them to git, append them to that machine's Hermes env file instead:
+
+```bash
+mkdir -p "$HOME/.hermes"
+chmod 700 "$HOME/.hermes"
+cat >> "$HOME/.hermes/.env" <<'EOF'
+HERMES_ANTIGRAVITY_CLIENT_ID=your-antigravity-oauth-client-id
+HERMES_ANTIGRAVITY_CLIENT_SECRET=your-antigravity-oauth-client-secret
+EOF
+chmod 600 "$HOME/.hermes/.env"
+```
+
+After that, `./scripts/install.sh` and `hermes login --provider google-antigravity` will pick them up automatically on that machine. The login itself then creates the per-account token file at `$HERMES_HOME/auth/google_antigravity.json`; do not copy or commit that token file.
+
 After installing, restart Hermes and run:
 
 ```bash
