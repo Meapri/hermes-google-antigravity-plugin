@@ -59,16 +59,16 @@ def test_google_one_ai_credits_are_explicitly_opted_into():
     assert wrapped["enabledCreditTypes"] == ["GOOGLE_ONE_AI"]
 
 
-def test_google_one_ai_credit_mode_defaults_to_fallback(monkeypatch):
+def test_google_one_ai_credit_mode_defaults_to_antigravity_app_behavior(monkeypatch):
     monkeypatch.delenv("HERMES_ANTIGRAVITY_GOOGLE_ONE_AI_CREDITS", raising=False)
 
-    assert getattr(ag, "_antigravity_google_one_ai_credits_mode")() == "fallback"
-    assert getattr(ag, "_antigravity_credit_attempts")() == [False, True]
-
-
-def test_google_one_ai_credit_mode_can_force_or_disable(monkeypatch):
-    monkeypatch.setenv("HERMES_ANTIGRAVITY_GOOGLE_ONE_AI_CREDITS", "always")
+    assert getattr(ag, "_antigravity_google_one_ai_credits_mode")() == "always"
     assert getattr(ag, "_antigravity_credit_attempts")() == [True]
+
+
+def test_google_one_ai_credit_mode_can_prefer_base_quota_or_disable(monkeypatch):
+    monkeypatch.setenv("HERMES_ANTIGRAVITY_GOOGLE_ONE_AI_CREDITS", "fallback")
+    assert getattr(ag, "_antigravity_credit_attempts")() == [False, True]
 
     monkeypatch.setenv("HERMES_ANTIGRAVITY_GOOGLE_ONE_AI_CREDITS", "0")
     assert getattr(ag, "_antigravity_credit_attempts")() == [False]

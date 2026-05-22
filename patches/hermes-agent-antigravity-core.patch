@@ -1110,14 +1110,17 @@ index de98880..8647e6a 100644
 +def _antigravity_google_one_ai_credits_mode() -> str:
 +    """How to use Google One AI/Ultra credits for Antigravity requests.
 +
-+    Default to ``fallback`` so the regular Antigravity/Claude quota is tried
-+    first.  Only retry with monthly Google One AI credits after Google reports
-+    capacity/quota exhaustion.  Users can still force legacy behavior with
-+    ``HERMES_ANTIGRAVITY_GOOGLE_ONE_AI_CREDITS=always`` (or ``1``) or disable
-+    credit fallback entirely with ``0``/``off``.
++    Default to ``always`` to match Antigravity app/CLI behavior: when the user
++    has an AI/Ultra subscription, Cloud Code PA requests must opt in with
++    ``enabledCreditTypes=["GOOGLE_ONE_AI"]`` or the backend evaluates only the
++    smaller raw Code Assist bucket and can return quota exhausted while the
++    Antigravity app still answers.  Users who specifically want to burn the raw
++    base bucket before monthly AI credits can set
++    ``HERMES_ANTIGRAVITY_GOOGLE_ONE_AI_CREDITS=fallback``; ``0``/``off`` keeps
++    the legacy no-credit behavior for diagnostics.
 +    """
 +
-+    value = os.getenv("HERMES_ANTIGRAVITY_GOOGLE_ONE_AI_CREDITS", "fallback").strip().lower()
++    value = os.getenv("HERMES_ANTIGRAVITY_GOOGLE_ONE_AI_CREDITS", "always").strip().lower()
 +    if value in {"1", "true", "yes", "on", "always", "force"}:
 +        return "always"
 +    if value in {"0", "false", "no", "off", "never", "disabled"}:
@@ -1332,16 +1335,16 @@ index 131ff94..155ab47 100644
 +    assert wrapped["enabledCreditTypes"] == ["GOOGLE_ONE_AI"]
 +
 +
-+def test_google_one_ai_credit_mode_defaults_to_fallback(monkeypatch):
++def test_google_one_ai_credit_mode_defaults_to_antigravity_app_behavior(monkeypatch):
 +    monkeypatch.delenv("HERMES_ANTIGRAVITY_GOOGLE_ONE_AI_CREDITS", raising=False)
 +
-+    assert getattr(ag, "_antigravity_google_one_ai_credits_mode")() == "fallback"
-+    assert getattr(ag, "_antigravity_credit_attempts")() == [False, True]
-+
-+
-+def test_google_one_ai_credit_mode_can_force_or_disable(monkeypatch):
-+    monkeypatch.setenv("HERMES_ANTIGRAVITY_GOOGLE_ONE_AI_CREDITS", "always")
++    assert getattr(ag, "_antigravity_google_one_ai_credits_mode")() == "always"
 +    assert getattr(ag, "_antigravity_credit_attempts")() == [True]
++
++
++def test_google_one_ai_credit_mode_can_prefer_base_quota_or_disable(monkeypatch):
++    monkeypatch.setenv("HERMES_ANTIGRAVITY_GOOGLE_ONE_AI_CREDITS", "fallback")
++    assert getattr(ag, "_antigravity_credit_attempts")() == [False, True]
 +
 +    monkeypatch.setenv("HERMES_ANTIGRAVITY_GOOGLE_ONE_AI_CREDITS", "0")
 +    assert getattr(ag, "_antigravity_credit_attempts")() == [False]

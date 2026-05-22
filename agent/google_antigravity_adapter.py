@@ -327,14 +327,17 @@ def _apply_antigravity_request_transforms(request: Dict[str, Any], *, model: str
 def _antigravity_google_one_ai_credits_mode() -> str:
     """How to use Google One AI/Ultra credits for Antigravity requests.
 
-    Default to ``fallback`` so the regular Antigravity/Claude quota is tried
-    first.  Only retry with monthly Google One AI credits after Google reports
-    capacity/quota exhaustion.  Users can still force legacy behavior with
-    ``HERMES_ANTIGRAVITY_GOOGLE_ONE_AI_CREDITS=always`` (or ``1``) or disable
-    credit fallback entirely with ``0``/``off``.
+    Default to ``always`` to match Antigravity app/CLI behavior: when the user
+    has an AI/Ultra subscription, Cloud Code PA requests must opt in with
+    ``enabledCreditTypes=["GOOGLE_ONE_AI"]`` or the backend evaluates only the
+    smaller raw Code Assist bucket and can return quota exhausted while the
+    Antigravity app still answers.  Users who specifically want to burn the raw
+    base bucket before monthly AI credits can set
+    ``HERMES_ANTIGRAVITY_GOOGLE_ONE_AI_CREDITS=fallback``; ``0``/``off`` keeps
+    the legacy no-credit behavior for diagnostics.
     """
 
-    value = os.getenv("HERMES_ANTIGRAVITY_GOOGLE_ONE_AI_CREDITS", "fallback").strip().lower()
+    value = os.getenv("HERMES_ANTIGRAVITY_GOOGLE_ONE_AI_CREDITS", "always").strip().lower()
     if value in {"1", "true", "yes", "on", "always", "force"}:
         return "always"
     if value in {"0", "false", "no", "off", "never", "disabled"}:
