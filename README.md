@@ -43,6 +43,8 @@ cd hermes-google-antigravity-plugin
 ./scripts/install.sh
 ```
 
+The installer copies the plugin/runtime files and, when run interactively, prompts for `HERMES_ANTIGRAVITY_CLIENT_ID` and `HERMES_ANTIGRAVITY_CLIENT_SECRET` if they are not already set. It saves them to `$HERMES_HOME/.env` with mode `600`, so after restarting Hermes the normal `hermes model` flow can open the Antigravity login directly.
+
 By default the installer assumes Hermes is installed at:
 
 ```text
