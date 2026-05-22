@@ -116,6 +116,31 @@ Optional Antigravity app version override:
 export HERMES_ANTIGRAVITY_VERSION=2.0.2
 ```
 
+Quota and credit behavior:
+
+By default the adapter matches the Antigravity app/CLI and sends `enabledCreditTypes: ["GOOGLE_ONE_AI"]`, so Google can route requests through the account's Google One AI / Ultra entitlement. Override only for diagnostics or if you intentionally want a different burn order:
+
+```bash
+# Default: match Antigravity app/CLI
+export HERMES_ANTIGRAVITY_GOOGLE_ONE_AI_CREDITS=always
+
+# Try raw Code Assist first, then retry with Google One AI entitlement on capacity errors
+export HERMES_ANTIGRAVITY_GOOGLE_ONE_AI_CREDITS=fallback
+
+# Disable Google One AI entitlement entirely
+export HERMES_ANTIGRAVITY_GOOGLE_ONE_AI_CREDITS=0
+```
+
+Claude Opus/Sonnet and GPT-OSS can also hit a short rolling capacity guard even when `/gquota` shows the 5-hour/daily bucket as available. The adapter locally paces those expensive models and retries short `RESOURCE_EXHAUSTED` responses before surfacing an error. Tune or disable that guard with:
+
+```bash
+# Default is 8 seconds for claude-* and gpt-oss* models
+export HERMES_ANTIGRAVITY_CAPACITY_PACING_SECONDS=8
+
+# Disable local pacing/retry delay
+export HERMES_ANTIGRAVITY_CAPACITY_PACING_SECONDS=0
+```
+
 ## Development
 
 Run the focused tests from the Hermes source tree after installing/copying files:

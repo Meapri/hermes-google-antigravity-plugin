@@ -94,6 +94,42 @@ def test_google_one_ai_credit_fallback_only_for_capacity_errors():
     assert checker(quota) is False
 
 
+def test_capacity_pacing_defaults_only_for_burst_limited_models(monkeypatch):
+    monkeypatch.delenv("HERMES_ANTIGRAVITY_CAPACITY_PACING_SECONDS", raising=False)
+    interval = getattr(ag, "_antigravity_capacity_pacing_interval")
+
+    assert interval("claude-opus-4-6-thinking") == getattr(ag, "ANTIGRAVITY_DEFAULT_CAPACITY_PACING_SECONDS")
+    assert interval("gpt-oss-120b-medium") == getattr(ag, "ANTIGRAVITY_DEFAULT_CAPACITY_PACING_SECONDS")
+    assert interval("gemini-3.1-pro-high") == 0.0
+
+
+def test_capacity_pacing_interval_can_be_overridden(monkeypatch):
+    monkeypatch.setenv("HERMES_ANTIGRAVITY_CAPACITY_PACING_SECONDS", "0")
+
+    assert getattr(ag, "_antigravity_capacity_pacing_interval")("claude-opus-4-6-thinking") == 0.0
+
+
+def test_short_antigravity_capacity_errors_are_internal_retryable():
+    checker = getattr(ag, "_is_short_antigravity_capacity_error")
+    short = ag.CodeAssistError(
+        "You have exhausted your capacity on this model",
+        code="code_assist_rate_limited",
+        status_code=429,
+        retry_after=1.2,
+        details={"status": "RESOURCE_EXHAUSTED", "message": "You have exhausted your capacity"},
+    )
+    long = ag.CodeAssistError(
+        "You have exhausted your capacity on this model",
+        code="code_assist_rate_limited",
+        status_code=429,
+        retry_after=3600,
+        details={"status": "RESOURCE_EXHAUSTED", "message": "You have exhausted your capacity"},
+    )
+
+    assert checker(short) is True
+    assert checker(long) is False
+
+
 def test_antigravity_20_ui_models_have_backend_fallbacks():
     candidates = getattr(ag, "_antigravity_model_candidates")
 

@@ -1371,3 +1371,254 @@ index 131ff94..155ab47 100644
 
 
  def test_antigravity_20_ui_models_have_backend_fallbacks():
+
+# Local Hermes Antigravity short-capacity pacing fix
+diff --git a/agent/google_antigravity_adapter.py b/agent/google_antigravity_adapter.py
+index 4db0a2e..18f3c22 100644
+--- a/agent/google_antigravity_adapter.py
++++ b/agent/google_antigravity_adapter.py
+@@ -9,6 +9,7 @@ from __future__ import annotations
+ 
+ import os
+ import re
++import threading
+ import time
+ import uuid
+ from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple, Union
+@@ -48,6 +49,10 @@ ANTIGRAVITY_VERSION_URL = "https://antigravity-auto-updater-974169037036.us-cent
+ ANTIGRAVITY_VERSION_CACHE_TTL_SECONDS = 6 * 60 * 60
+ _ANTIGRAVITY_VERSION_CACHE: Dict[str, Any] = {"version": ANTIGRAVITY_VERSION_FALLBACK, "fetched_at": 0.0}
+ GOOGLE_ONE_AI_CREDIT_TYPE = "GOOGLE_ONE_AI"
++ANTIGRAVITY_CAPACITY_RETRY_ATTEMPTS = 3
++ANTIGRAVITY_DEFAULT_CAPACITY_PACING_SECONDS = 8.0
++_ANTIGRAVITY_CAPACITY_PACING_LOCK = threading.Lock()
++_ANTIGRAVITY_CAPACITY_NEXT_ALLOWED_AT: Dict[str, float] = {}
+ 
+ 
+ # Antigravity 2.0's UI labels do not always match the backend model ID accepted
+@@ -354,6 +359,68 @@ def _antigravity_credit_attempts() -> List[bool]:
+     return [False, True]
+ 
+ 
++def _antigravity_capacity_pacing_interval(model: str) -> float:
++    """Minimum local spacing for Antigravity models with tiny burst buckets."""
++
++    normalized = (model or "").lower()
++    if not any(marker in normalized for marker in ("claude-", "gpt-oss")):
++        return 0.0
++    raw = os.getenv("HERMES_ANTIGRAVITY_CAPACITY_PACING_SECONDS", "").strip()
++    if raw:
++        try:
++            return max(0.0, float(raw))
++        except ValueError:
++            pass
++    return ANTIGRAVITY_DEFAULT_CAPACITY_PACING_SECONDS
++
++
++def _pace_antigravity_capacity_sensitive_request(model: str) -> None:
++    """Pace expensive Antigravity starts so tool loops do not hit burst 429s."""
++
++    interval = _antigravity_capacity_pacing_interval(model)
++    if interval <= 0:
++        return
++    key = (model or "").lower()
++    while True:
++        with _ANTIGRAVITY_CAPACITY_PACING_LOCK:
++            now = time.monotonic()
++            next_allowed = _ANTIGRAVITY_CAPACITY_NEXT_ALLOWED_AT.get(key, 0.0)
++            wait = next_allowed - now
++            if wait <= 0:
++                _ANTIGRAVITY_CAPACITY_NEXT_ALLOWED_AT[key] = now + interval
++                return
++        time.sleep(min(wait, interval))
++
++
++def _push_antigravity_capacity_pacing(model: str, delay_seconds: float) -> None:
++    interval = _antigravity_capacity_pacing_interval(model)
++    delay = max(interval, delay_seconds or 0.0)
++    if delay <= 0:
++        return
++    key = (model or "").lower()
++    with _ANTIGRAVITY_CAPACITY_PACING_LOCK:
++        _ANTIGRAVITY_CAPACITY_NEXT_ALLOWED_AT[key] = max(
++            _ANTIGRAVITY_CAPACITY_NEXT_ALLOWED_AT.get(key, 0.0),
++            time.monotonic() + delay,
++        )
++
++
++def _is_short_antigravity_capacity_error(error: Optional[BaseException]) -> bool:
++    if not isinstance(error, CodeAssistError):
++        return False
++    if getattr(error, "status_code", None) != 429:
++        return False
++    retry_after = getattr(error, "retry_after", None)
++    if retry_after is not None and retry_after > 10:
++        return False
++    details = getattr(error, "details", None) or {}
++    if isinstance(details, dict):
++        message = str(details.get("message") or details.get("status") or error).lower()
++    else:
++        message = str(error).lower()
++    return "capacity" in message or "resource_exhausted" in message or "quota" in message
++
++
+ def _is_google_one_ai_credit_fallback_error(error: Optional[CodeAssistError]) -> bool:
+     if error is None:
+         return False
+@@ -655,20 +722,33 @@ class GoogleAntigravityClient(GeminiCloudCodeClient):
+                 wrapped = build_wrapped(effective_model, use_google_one_ai_credits=use_credits)
+                 for endpoint in ANTIGRAVITY_ENDPOINT_FALLBACKS:
+                     url = f"{endpoint}/v1internal:generateContent"
+-                    response = self._http.post(url, json=wrapped, headers=headers)
+-                    if response.status_code == 200:
+-                        try:
+-                            payload = response.json()
+-                        except ValueError as exc:
+-                            raise CodeAssistError(
+-                                f"Invalid JSON from Antigravity Code Assist: {exc}",
+-                                code="antigravity_invalid_json",
+-                            ) from exc
+-                        return _translate_gemini_response(payload, model=model)
+-                    last_error = _gemini_http_error(response)
+-                    if response.status_code == 403 and _is_endpoint_service_disabled(response):
++                    response: Optional[httpx.Response] = None
++                    for capacity_attempt in range(ANTIGRAVITY_CAPACITY_RETRY_ATTEMPTS):
++                        _pace_antigravity_capacity_sensitive_request(effective_model)
++                        response = self._http.post(url, json=wrapped, headers=headers)
++                        if response.status_code == 200:
++                            try:
++                                payload = response.json()
++                            except ValueError as exc:
++                                raise CodeAssistError(
++                                    f"Invalid JSON from Antigravity Code Assist: {exc}",
++                                    code="antigravity_invalid_json",
++                                ) from exc
++                            return _translate_gemini_response(payload, model=model)
++                        last_error = _gemini_http_error(response)
++                        if (
++                            _is_short_antigravity_capacity_error(last_error)
++                            and capacity_attempt + 1 < ANTIGRAVITY_CAPACITY_RETRY_ATTEMPTS
++                        ):
++                            _push_antigravity_capacity_pacing(
++                                effective_model,
++                                float(getattr(last_error, "retry_after", 0.0) or 0.0),
++                            )
++                            continue
++                        break
++                    if response is not None and response.status_code == 403 and _is_endpoint_service_disabled(response):
+                         continue
+-                    if response.status_code not in retry_statuses:
++                    if response is not None and response.status_code not in retry_statuses:
+                         break
+                 if not use_credits and _is_google_one_ai_credit_fallback_error(last_error):
+                     continue
+@@ -698,29 +778,40 @@ class GoogleAntigravityClient(GeminiCloudCodeClient):
+                     use_credits = False
+                 for endpoint in ANTIGRAVITY_ENDPOINT_FALLBACKS:
+                     url = f"{endpoint}/v1internal:streamGenerateContent?alt=sse"
+-                    try:
+-                        with self._http.stream("POST", url, json=wrapped_body, headers=stream_headers) as response:
+-                            if response.status_code != 200:
+-                                response.read()
+-                                last_error = _gemini_http_error(response)
+-                                if response.status_code == 403 and _is_endpoint_service_disabled(response):
+-                                    continue
+-                                if response.status_code not in {400, 404, 429, 500, 502, 503, 504}:
++                    for capacity_attempt in range(ANTIGRAVITY_CAPACITY_RETRY_ATTEMPTS):
++                        try:
++                            _pace_antigravity_capacity_sensitive_request(effective_model)
++                            with self._http.stream("POST", url, json=wrapped_body, headers=stream_headers) as response:
++                                if response.status_code != 200:
++                                    response.read()
++                                    last_error = _gemini_http_error(response)
++                                    if response.status_code == 403 and _is_endpoint_service_disabled(response):
++                                        break
++                                    if response.status_code not in {400, 404, 429, 500, 502, 503, 504}:
++                                        raise last_error
++                                    if (
++                                        _is_short_antigravity_capacity_error(last_error)
++                                        and capacity_attempt + 1 < ANTIGRAVITY_CAPACITY_RETRY_ATTEMPTS
++                                    ):
++                                        _push_antigravity_capacity_pacing(
++                                            effective_model,
++                                            float(getattr(last_error, "retry_after", 0.0) or 0.0),
++                                        )
++                                        continue
++                                    if use_credits or _is_google_one_ai_credit_fallback_error(last_error):
++                                        break
+                                     raise last_error
+-                                if use_credits or _is_google_one_ai_credit_fallback_error(last_error):
+-                                    continue
+-                                raise last_error
+-                            tool_call_counter: List[int] = [0]
+-                            for event in _iter_sse_events(response):
+-                                for chunk in _translate_stream_event(event, model, tool_call_counter):
+-                                    yield chunk
+-                            return
+-                    except httpx.HTTPError as exc:
+-                        last_error = CodeAssistError(
+-                            f"Antigravity streaming request failed for {effective_model}: {exc}",
+-                            code="antigravity_stream_error",
+-                        )
+-                        continue
++                                tool_call_counter: List[int] = [0]
++                                for event in _iter_sse_events(response):
++                                    for chunk in _translate_stream_event(event, model, tool_call_counter):
++                                        yield chunk
++                                return
++                        except httpx.HTTPError as exc:
++                            last_error = CodeAssistError(
++                                f"Antigravity streaming request failed for {effective_model}: {exc}",
++                                code="antigravity_stream_error",
++                            )
++                            break
+             if last_error:
+                 raise last_error
+ 
+diff --git a/tests/agent/test_google_antigravity_adapter.py b/tests/agent/test_google_antigravity_adapter.py
+index 48cd645..df17e53 100644
+--- a/tests/agent/test_google_antigravity_adapter.py
++++ b/tests/agent/test_google_antigravity_adapter.py
+@@ -94,6 +94,42 @@ def test_google_one_ai_credit_fallback_only_for_capacity_errors():
+     assert checker(quota) is False
+ 
+ 
++def test_capacity_pacing_defaults_only_for_burst_limited_models(monkeypatch):
++    monkeypatch.delenv("HERMES_ANTIGRAVITY_CAPACITY_PACING_SECONDS", raising=False)
++    interval = getattr(ag, "_antigravity_capacity_pacing_interval")
++
++    assert interval("claude-opus-4-6-thinking") == getattr(ag, "ANTIGRAVITY_DEFAULT_CAPACITY_PACING_SECONDS")
++    assert interval("gpt-oss-120b-medium") == getattr(ag, "ANTIGRAVITY_DEFAULT_CAPACITY_PACING_SECONDS")
++    assert interval("gemini-3.1-pro-high") == 0.0
++
++
++def test_capacity_pacing_interval_can_be_overridden(monkeypatch):
++    monkeypatch.setenv("HERMES_ANTIGRAVITY_CAPACITY_PACING_SECONDS", "0")
++
++    assert getattr(ag, "_antigravity_capacity_pacing_interval")("claude-opus-4-6-thinking") == 0.0
++
++
++def test_short_antigravity_capacity_errors_are_internal_retryable():
++    checker = getattr(ag, "_is_short_antigravity_capacity_error")
++    short = ag.CodeAssistError(
++        "You have exhausted your capacity on this model",
++        code="code_assist_rate_limited",
++        status_code=429,
++        retry_after=1.2,
++        details={"status": "RESOURCE_EXHAUSTED", "message": "You have exhausted your capacity"},
++    )
++    long = ag.CodeAssistError(
++        "You have exhausted your capacity on this model",
++        code="code_assist_rate_limited",
++        status_code=429,
++        retry_after=3600,
++        details={"status": "RESOURCE_EXHAUSTED", "message": "You have exhausted your capacity"},
++    )
++
++    assert checker(short) is True
++    assert checker(long) is False
++
++
+ def test_antigravity_20_ui_models_have_backend_fallbacks():
+     candidates = getattr(ag, "_antigravity_model_candidates")
+ 
