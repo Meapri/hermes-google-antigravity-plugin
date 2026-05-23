@@ -1,0 +1,65 @@
+import json
+import time
+from datetime import datetime, timedelta, timezone
+
+
+def test_antigravity_load_imports_cli_token_when_hermes_token_missing(tmp_path, monkeypatch):
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from agent import google_antigravity_oauth as oauth
+
+    hermes_home = tmp_path / "hermes"
+    home = tmp_path / "home"
+    cli_path = home / ".gemini" / "antigravity-cli" / "antigravity-oauth-token"
+    cli_path.parent.mkdir(parents=True)
+    expiry = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat().replace("+00:00", "Z")
+    cli_path.write_text(
+        json.dumps(
+            {
+                "access_token": "cli-access",
+                "refresh_token": "cli-refresh",
+                "token_type": "Bearer",
+                "expiry": expiry,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    token = set_hermes_home_override(hermes_home)
+    monkeypatch.setenv("HOME", str(home))
+    try:
+        creds = oauth.load_credentials()
+    finally:
+        reset_hermes_home_override(token)
+
+    assert creds is not None
+    assert creds.access_token == "cli-access"
+    assert creds.refresh_token == "cli-refresh"
+    assert creds.expires_ms > int(time.time() * 1000)
+
+
+def test_antigravity_save_mirrors_hermes_token_to_cli_shape(tmp_path, monkeypatch):
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from agent import google_antigravity_oauth as oauth
+
+    hermes_home = tmp_path / "hermes"
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    token = set_hermes_home_override(hermes_home)
+    try:
+        oauth.save_credentials(
+            oauth.GoogleCredentials(
+                access_token="hermes-access",
+                refresh_token="hermes-refresh",
+                expires_ms=int((time.time() + 3600) * 1000),
+                email="user@example.com",
+            )
+        )
+    finally:
+        reset_hermes_home_override(token)
+
+    cli_path = home / ".gemini" / "antigravity-cli" / "antigravity-oauth-token"
+    data = json.loads(cli_path.read_text(encoding="utf-8"))
+    assert data["access_token"] == "hermes-access"
+    assert data["refresh_token"] == "hermes-refresh"
+    assert data["token_type"] == "Bearer"
+    assert data["expiry"].endswith("Z")

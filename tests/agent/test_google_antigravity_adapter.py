@@ -85,6 +85,18 @@ def test_google_one_ai_credit_mode_can_prefer_base_quota_or_disable(monkeypatch)
     assert getattr(ag, "_antigravity_credit_attempts")() == [False]
 
 
+def test_antigravity_session_id_is_stable_and_opaque():
+    stable = getattr(ag, "_stable_antigravity_session_id")
+
+    first = stable("telegram:user@example.com:session-123")
+    second = stable("telegram:user@example.com:session-123")
+
+    assert first == second
+    assert first.startswith("-hermes-")
+    assert "user@example.com" not in first
+    assert stable("") == ""
+
+
 def test_google_one_ai_credit_fallback_only_for_capacity_errors():
     checker = getattr(ag, "_is_google_one_ai_credit_fallback_error")
 
@@ -144,13 +156,13 @@ def test_short_antigravity_capacity_errors_are_internal_retryable():
 def test_antigravity_20_ui_models_have_backend_fallbacks():
     candidates = getattr(ag, "_antigravity_model_candidates")
 
-    assert candidates("gemini-3.5-flash-high") == ["gemini-3.5-flash-high", "gemini-3-flash"]
-    assert candidates("gemini-3.5-flash-medium") == ["gemini-3.5-flash-medium", "gemini-3-flash"]
-    assert candidates("gemini-3.1-pro-high") == ["gemini-3.1-pro-high", "gemini-3.1-pro-low"]
+    assert candidates("gemini-3.5-flash-high") == ["gemini-3-flash-agent"]
+    assert candidates("gemini-3.5-flash-medium") == ["gemini-3-flash"]
+    assert candidates("gemini-3.1-pro-high") == ["gemini-3.1-pro-low"]
     assert candidates("gemini-3.1-pro-low") == ["gemini-3.1-pro-low"]
-    assert candidates("claude-sonnet-4-6-thinking") == ["claude-sonnet-4-6-thinking", "claude-sonnet-4-6"]
+    assert candidates("claude-sonnet-4-6-thinking") == ["claude-sonnet-4-6"]
     assert candidates("claude-opus-4-6-thinking") == ["claude-opus-4-6-thinking"]
-    assert candidates("gpt-oss-120b") == ["gpt-oss-120b", "gpt-oss-120b-medium"]
+    assert candidates("gpt-oss-120b") == ["gpt-oss-120b-medium"]
 
 
 def test_gemini_31_pro_ui_tiers_infer_thinking_level_and_token_floor():
@@ -201,6 +213,44 @@ def test_claude_antigravity_transform_normalizes_tools_and_system_instruction():
     assert getattr(ag, "ANTIGRAVITY_SYSTEM_INSTRUCTION") in system["parts"][0]["text"]
     assert "User system prompt" in system["parts"][0]["text"]
     assert request["sessionId"].startswith("-")
+    assert "contextWindowCompression" not in request
+
+
+def test_antigravity_transform_can_opt_into_context_compression(monkeypatch):
+    monkeypatch.setenv("HERMES_ANTIGRAVITY_CONTEXT_COMPRESSION", "1")
+    gemini_request = {"contents": [{"role": "user", "parts": [{"text": "hi"}]}]}
+    gpt_request = {"contents": [{"role": "user", "parts": [{"text": "hi"}]}]}
+
+    getattr(ag, "_apply_antigravity_request_transforms")(
+        gemini_request,
+        model="gemini-3.5-flash-high",
+    )
+    getattr(ag, "_apply_antigravity_request_transforms")(
+        gpt_request,
+        model="gpt-oss-120b-medium",
+    )
+
+    assert gemini_request["contextWindowCompression"] == {
+        "triggerTokens": 100_000,
+        "slidingWindow": {"targetTokens": 60_000},
+    }
+    assert gpt_request["contextWindowCompression"] == {
+        "triggerTokens": 100_000,
+        "slidingWindow": {"targetTokens": 60_000},
+    }
+
+
+def test_antigravity_transform_preserves_stable_hermes_session_id():
+    request = {"contents": [{"role": "user", "parts": [{"text": "hi"}]}]}
+    session_id = getattr(ag, "_stable_antigravity_session_id")("hermes-session")
+    request["sessionId"] = session_id
+
+    getattr(ag, "_apply_antigravity_request_transforms")(
+        request,
+        model="gemini-3.5-flash-high",
+    )
+
+    assert request["sessionId"] == session_id
 
 
 def test_claude_thinking_transform_sets_thinking_config_and_max_tokens():
@@ -220,6 +270,19 @@ def test_claude_thinking_transform_sets_thinking_config_and_max_tokens():
     assert gen["maxOutputTokens"] == 64_000
     assert request["tools"][0]["functionDeclarations"][0]["parameters"]["required"] == [getattr(ag, "EMPTY_SCHEMA_PLACEHOLDER_NAME")]
     assert "Interleaved thinking is enabled" in request["systemInstruction"]["parts"][0]["text"]
+
+
+def test_claude_thinking_transform_can_disable_thought_inclusion():
+    request = {"generationConfig": {"maxOutputTokens": 4096}}
+
+    getattr(ag, "_apply_antigravity_request_transforms")(
+        request,
+        model="claude-opus-4-6-thinking",
+        thinking_config={"includeThoughts": False},
+    )
+
+    assert request["generationConfig"]["thinkingConfig"] == {"include_thoughts": False}
+    assert request["generationConfig"]["maxOutputTokens"] == 4096
 
 
 def test_claude_tool_schema_keeps_optional_only_objects_draft_compatible():
@@ -295,3 +358,66 @@ def test_gpt_oss_transform_strips_proto_stringified_numeric_schema_constraints()
     assert "maxLength" not in params["properties"]["choices"]["items"]
     assert params["properties"]["choices"]["type"] == "array"
     assert params["required"] == ["question"]
+
+
+def test_invalid_argument_retry_body_can_drop_request_metadata_for_poisoned_fallbacks():
+    wrapped = {
+        "project": "test-project",
+        "model": "gemini-3-flash-agent",
+        "requestId": "agent-old",
+        "request": {
+            "contents": [
+                {"role": "user", "parts": [{"text": "old"}]},
+                {"role": "model", "parts": [{"functionCall": {"name": "read", "args": {}}}]},
+                {"role": "user", "parts": [{"functionResponse": {"name": "read", "response": {"content": "secret-ish"}}}]},
+                {"role": "user", "parts": [{"text": "latest request"}]},
+            ],
+            "systemInstruction": {"role": "user", "parts": [{"text": "large poisoned system"}]},
+            "generationConfig": {"thinkingConfig": {"thinkingLevel": "high"}},
+            "sessionId": "sticky-session",
+            "tools": [{"functionDeclarations": [{"name": "read"}]}],
+        },
+    }
+
+    retry = getattr(ag, "_minimal_invalid_argument_retry_body")(
+        wrapped,
+        preserve_request_metadata=False,
+    )
+
+    assert retry["requestId"] != "agent-old"
+    assert retry["request"] == {
+        "contents": [{"role": "user", "parts": [{"text": "latest request"}]}],
+        "systemInstruction": {"role": "user", "parts": [{"text": "large poisoned system"}]},
+    }
+    assert retry["project"] == "test-project"
+    assert retry["model"] == "gemini-3-flash-agent"
+
+
+def test_invalid_argument_metadata_preserving_retry_drops_tools():
+    wrapped = {
+        "project": "test-project",
+        "model": "gemini-3-flash-agent",
+        "requestId": "agent-old",
+        "request": {
+            "contents": [
+                {"role": "user", "parts": [{"text": "old"}]},
+                {"role": "user", "parts": [{"text": "latest request"}]},
+            ],
+            "systemInstruction": {"role": "user", "parts": [{"text": "system"}]},
+            "generationConfig": {"thinkingConfig": {"thinkingLevel": "high"}},
+            "sessionId": "sticky-session",
+            "contextWindowCompression": {"triggerTokens": 100000, "slidingWindow": {"targetTokens": 60000}},
+            "tools": [{"functionDeclarations": [{"name": "read"}]}],
+            "toolConfig": {"functionCallingConfig": {"mode": "AUTO"}},
+        },
+    }
+
+    retry = getattr(ag, "_minimal_invalid_argument_retry_body")(wrapped)
+
+    assert retry["requestId"] != "agent-old"
+    assert "contextWindowCompression" not in retry["request"]
+    assert "tools" not in retry["request"]
+    assert "toolConfig" not in retry["request"]
+    assert retry["request"]["systemInstruction"] == wrapped["request"]["systemInstruction"]
+    assert retry["request"]["generationConfig"] == wrapped["request"]["generationConfig"]
+    assert retry["request"]["sessionId"] == "sticky-session"

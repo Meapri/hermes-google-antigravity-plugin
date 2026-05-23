@@ -8,13 +8,14 @@ This package turns the Antigravity work into a clean Hermes plugin bundle:
 - `agent/google_antigravity_oauth.py` reuses Hermes' generic Google OAuth machinery with Antigravity's OAuth client, scopes, callback port, credential file, and project ID handling.
 - `agent/google_antigravity_adapter.py` adapts Antigravity's Cloud Code PA endpoint to Hermes' OpenAI-compatible chat-completions client interface.
 - `agent/antigravity_quota_grpc.py` probes Antigravity's `FetchQuotaStatus` gRPC quota API and falls back safely when the service returns no buckets.
+- `agent/antigravity_stream_grpc.py` optionally injects Antigravity context-window compression settings without enabling them by default.
 - `patches/hermes-agent-antigravity-core.patch` wires Hermes' current runtime, auth, model picker, and quota paths to the plugin until Hermes exposes first-class plugin hooks for custom model clients and OAuth resolvers.
 
 ## Status
 
 Experimental / unofficial. Use at your own risk. Antigravity OAuth endpoints and model IDs may change upstream.
 
-This integration intentionally does not depend on Gemini CLI.
+This integration intentionally does not depend on Gemini CLI. It can import or mirror the Antigravity app/CLI OAuth token file only when present, so Hermes and the Antigravity app can share the same login state without committing credentials.
 
 ## Supported provider and aliases
 
@@ -34,7 +35,7 @@ Curated model IDs (matching the Antigravity UI model picker):
 - `claude-opus-4-6` — Claude Opus 4.6
 - `gpt-oss-120b-medium` — GPT-OSS 120B (Medium)
 
-Display-friendly IDs like `gemini-3.5-flash-high` or `gemini-3.1-pro-high` are mapped internally to the real Antigravity backend IDs (e.g. `gemini-3-flash-agent`, `gemini-3.1-pro-low`) and get the appropriate `thinkingConfig.thinkingLevel` (high/medium/low) injected automatically. Claude thinking is likewise controlled by the model name: names containing `thinking` get `include_thoughts: true` injected into the request.
+Display-friendly IDs like `gemini-3.5-flash-high` or `gemini-3.1-pro-high` are mapped internally to the real Antigravity backend IDs (e.g. `gemini-3-flash-agent`, `gemini-3.1-pro-low`) and get the appropriate `thinkingConfig.thinkingLevel` (high/medium/low) injected automatically. Claude thinking is likewise controlled by the model name: names containing `thinking` get `include_thoughts: true` injected into the request. Hermes session IDs are hashed before they are sent as Antigravity `sessionId` values, so platform/user identifiers are not exposed verbatim.
 
 ## Install
 
@@ -101,11 +102,25 @@ or select Google Antigravity from:
 hermes model
 ```
 
-Credentials are stored under Hermes home, separate from Gemini CLI credentials:
+Credentials are stored under Hermes home:
 
 ```text
 $HERMES_HOME/auth/google_antigravity.json
 ```
+
+For compatibility with the Antigravity app/CLI, the runtime also reads and mirrors the same OAuth token shape at:
+
+```text
+$HOME/.gemini/antigravity-cli/antigravity-oauth-token
+```
+
+Override that location only for local testing or isolated deployments:
+
+```bash
+export HERMES_ANTIGRAVITY_CLI_TOKEN_PATH=/secure/path/antigravity-oauth-token
+```
+
+Both files contain bearer/refresh tokens and must be treated as secrets. The writer uses mode `600` for mirrored token files, but you should still avoid putting `$HOME/.gemini`, `$HERMES_HOME/auth`, or terminal transcripts under version control.
 
 ## Configure manually
 
@@ -130,6 +145,18 @@ Optional Antigravity app version override:
 ```bash
 export HERMES_ANTIGRAVITY_VERSION=2.0.2
 ```
+
+Optional Antigravity-side context compression:
+
+```bash
+# Default: off. Hermes keeps normal model-specific context handling.
+export HERMES_ANTIGRAVITY_CONTEXT_COMPRESSION=0
+
+# Opt in when testing Antigravity's own sliding-window compression.
+export HERMES_ANTIGRAVITY_CONTEXT_COMPRESSION=1
+```
+
+When enabled, Hermes sends a conservative `contextWindowCompression` hint and drops that hint during minimal INVALID_ARGUMENT recovery retries so a bad compression setting does not trap the session.
 
 Quota, tier, and credit behavior:
 
@@ -194,9 +221,18 @@ Once Hermes adds plugin hooks for custom OAuth providers and model clients, the 
 
 ## Security
 
-Do not commit `google_antigravity.json`, OAuth tokens, browser cookies, `.env`, or terminal logs.
+Do not commit `google_antigravity.json`, `antigravity-oauth-token`, OAuth tokens, browser cookies, `.env`, SQLite state databases, exported chat transcripts, screenshots, or terminal logs.
 
 OAuth client IDs/secrets, even public desktop-client values, are intentionally not committed here. Configure them with `HERMES_ANTIGRAVITY_CLIENT_ID` and `HERMES_ANTIGRAVITY_CLIENT_SECRET` in your local environment or `$HERMES_HOME/.env`.
+
+Before publishing patches or bug reports, redact:
+
+- `Authorization` headers and bearer tokens
+- `refresh_token`, `access_token`, `client_secret`, and OAuth callback URLs
+- Google account email addresses and project IDs if they identify a personal/work account
+- Hermes session IDs, Telegram/Discord IDs, and raw chat logs that may contain user content
+
+This repo uses fake token strings in tests only. If GitHub push protection blocks a push, assume a real secret may have slipped into the diff and rotate that credential before retrying.
 
 ## License
 

@@ -7,6 +7,7 @@ envelope details that differ in Antigravity.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
@@ -103,10 +104,15 @@ CLAUDE_INTERLEAVED_THINKING_HINT = (
 )
 GEMINI_31_PRO_MIN_OUTPUT_TOKENS = 256
 ANTIGRAVITY_SYSTEM_INSTRUCTION = (
-    "Always use absolute paths when referencing files.\n"
-    "Be proactive: anticipate follow-up needs, suggest improvements, "
-    "and flag potential issues without being asked."
+    "Use absolute file paths for filesystem tool arguments."
 )
+
+def _stable_antigravity_session_id(session_id: Any) -> str:
+    raw = str(session_id or "").strip()
+    if not raw:
+        return ""
+    digest = hashlib.sha256(raw.encode("utf-8", errors="ignore")).hexdigest()[:32]
+    return f"-hermes-{digest}"
 
 def _is_claude_model(model: str) -> bool:
     return "claude" in str(model or "").lower()
@@ -338,6 +344,7 @@ def _apply_antigravity_request_transforms(request: Dict[str, Any], *, model: str
     elif _is_gpt_oss_model(model):
         _normalize_gpt_oss_tools(request)
     _append_system_text(request, ANTIGRAVITY_SYSTEM_INSTRUCTION, prepend=True, role="user")
+    inject_context_compression(request, model=model)
     request["sessionId"] = str(request.get("sessionId") or f"-{uuid.uuid4()}")
 
 def _antigravity_google_one_ai_credits_mode() -> str:
@@ -507,7 +514,10 @@ def _minimal_invalid_argument_retry_body(
         return None
 
     if not preserve_request_metadata:
-        # Ultra-minimal: just the last user text (original behavior)
+        # Ultra-minimal: last user text plus the durable Hermes system prompt.
+        # Keeping generationConfig/sessionId/tools out avoids the common
+        # INVALID_ARGUMENT triggers, but dropping systemInstruction makes the
+        # model answer as a fresh generic Gemini persona.
         last_text = ""
         for turn in reversed(contents):
             if not isinstance(turn, dict):
@@ -526,12 +536,20 @@ def _minimal_invalid_argument_retry_body(
         retry_request: Dict[str, Any] = {
             "contents": [{"role": "user", "parts": [{"text": last_text}]}],
         }
+        system_instruction = request.get("systemInstruction")
+        if isinstance(system_instruction, dict):
+            retry_request["systemInstruction"] = system_instruction
+        elif isinstance(system_instruction, str) and system_instruction.strip():
+            retry_request["systemInstruction"] = {"parts": [{"text": system_instruction}]}
         retry_wrapped = dict(wrapped)
         retry_wrapped["request"] = retry_request
         retry_wrapped["requestId"] = "agent-" + str(uuid.uuid4())
         return retry_wrapped
 
-    # Graduated trim: keep recent turns, truncate large tool results
+    # Graduated trim: keep recent turns, truncate large tool results, and
+    # drop tools. Opaque 400 INVALID_ARGUMENT responses most often come from
+    # transcript/tool-schema edge cases; the next retry is a recovery turn,
+    # so it is better to get a plain answer than to resend the same schema.
     _LARGE_PART_THRESHOLD = 2000  # chars
     _KEEP_RECENT_TURNS = 12  # keep last N turns
 
@@ -569,7 +587,9 @@ def _minimal_invalid_argument_retry_body(
 
     retry_request = dict(request)
     retry_request["contents"] = trimmed_contents
-    # Keep tools — they're rarely the cause of 400s
+    retry_request.pop("contextWindowCompression", None)
+    retry_request.pop("tools", None)
+    retry_request.pop("toolConfig", None)
     retry_wrapped = dict(wrapped)
     retry_wrapped["request"] = retry_request
     retry_wrapped["requestId"] = "agent-" + str(uuid.uuid4())
@@ -821,8 +841,10 @@ class GoogleAntigravityClient(GeminiCloudCodeClient):
         ctx = self._ensure_project_context(access_token, model)
 
         thinking_config = None
+        antigravity_session_id = ""
         if isinstance(extra_body, dict):
             thinking_config = extra_body.get("thinking_config") or extra_body.get("thinkingConfig")
+            antigravity_session_id = _stable_antigravity_session_id(extra_body.get("session_id"))
         thinking_config = _merge_antigravity_thinking_config(model, thinking_config)
         effective_max_tokens = _antigravity_effective_max_tokens(model, max_tokens)
 
@@ -850,6 +872,8 @@ class GoogleAntigravityClient(GeminiCloudCodeClient):
                 stop=stop,
                 thinking_config=thinking_config,
             )
+            if antigravity_session_id:
+                inner["sessionId"] = antigravity_session_id
             # Transform using the requested UI model so e.g. "...-thinking"
             # aliases still get thinking/tool normalization even when the
             # backend model ID omits the label suffix.
