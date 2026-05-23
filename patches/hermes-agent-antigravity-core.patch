@@ -1542,6 +1542,32 @@ index 0f56ad61c..55d6ca21a 100644
          )
          return False  # → sys.exit(1) in the caller
  
+diff --git a/hermes_cli/commands.py b/hermes_cli/commands.py
+index b920ff2e5..51d73f066 100644
+--- a/hermes_cli/commands.py
++++ b/hermes_cli/commands.py
+@@ -488,6 +488,7 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
+     Plugin-registered slash commands that require arguments are **excluded**
+     because plugins may not provide a no-arg usage fallback.
+     """
++    from agent.i18n import t
+     overrides = _resolve_config_gates()
+     result: list[tuple[str, str]] = []
+     for cmd in COMMAND_REGISTRY:
+@@ -498,7 +499,12 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
+         # the menu hurts discoverability (issue #24312).
+         tg_name = _sanitize_telegram_name(cmd.name)
+         if tg_name:
+-            result.append((tg_name, cmd.description))
++            # Try to fetch localized description from ko.yaml/en.yaml via commands.<name>.desc
++            desc_key = f"commands.{cmd.name}"
++            localized_desc = t(desc_key, lang=None)
++            if localized_desc == desc_key:  # fallback if missing in translation catalog
++                localized_desc = cmd.description
++            result.append((tg_name, localized_desc))
+     for name, description, args_hint in _iter_plugin_command_entries():
+         if _requires_argument(args_hint):
+             continue
 diff --git a/hermes_cli/model_switch.py b/hermes_cli/model_switch.py
 index 0e01903eb..1c10ead6e 100644
 --- a/hermes_cli/model_switch.py
@@ -1588,6 +1614,108 @@ index 0017004ee..2084098ab 100644
      "lmstudio": HermesOverlay(
          transport="openai_chat",
          auth_type="api_key",
+diff --git a/locales/ko.yaml b/locales/ko.yaml
+index 6fc9d1679..086c37c8d 100644
+--- a/locales/ko.yaml
++++ b/locales/ko.yaml
+@@ -75,14 +75,14 @@ gateway:
+     branched_many:         "⑂ **{title}**(으)로 분기했습니다 (메시지 {count}개 복사됨)\n원본: `{parent}`\n분기: `{new}`\n원본으로 돌아가려면 `/resume`을 사용하세요."
+ 
+   commands:
+-    usage:                 "사용법: `/commands [page]`"
+-    skill_header:          "⚡ **스킬 명령**:"
+-    default_desc:          "스킬 명령"
+-    none:                  "사용 가능한 명령이 없습니다."
+-    header:                "📚 **명령 목록** (총 {total}개, {page}/{total_pages} 페이지)"
+-    nav_prev:              "`/commands {page}` ← 이전"
+-    nav_next:              "다음 → `/commands {page}`"
+-    out_of_range:          "_(요청한 페이지 {requested}이(가) 범위를 벗어났습니다. {page} 페이지를 표시합니다.)_"
++    usage:                 "Usage: `/commands [page]`"
++    skill_header:          "⚡ **Skill Commands**:"
++    default_desc:          "Skill command"
++    none:                  "No commands available."
++    header:                "📚 **Commands** ({total} total, page {page}/{total_pages})"
++    nav_prev:              "`/commands {page}` ← prev"
++    nav_next:              "next → `/commands {page}`"
++    out_of_range:          "_(Requested page {requested} was out of range, showing page {page}.)_"
+ 
+   compress:
+     not_enough:            "압축할 대화가 충분하지 않습니다 (최소 4개의 메시지가 필요합니다)."
+@@ -349,3 +349,74 @@ gateway:
+     session_db_unavailable_prefix: "세션 데이터베이스를 사용할 수 없습니다"
+     session_not_found:           "데이터베이스에서 세션을 찾을 수 없습니다."
+     warn_passthrough:            "⚠️ {error}"
++
++  commands:
++    new: "대화를 초기화하고 새 세션을 시작함"
++    topic: "텔레그램 DM 토픽 세션 제어"
++    clear: "화면을 지우고 세션을 새로 시작함"
++    redraw: "UI를 다시 그려서 레이아웃 오류 복구"
++    history: "이전 대화 기록 확인"
++    save: "현재 세션 대화 내용 저장"
++    retry: "마지막 메시지 다시 전송하여 재시도"
++    undo: "마지막 주고받은 대화 한 단계 취소"
++    title: "현재 세션의 타이틀 이름 설정"
++    handoff: "다른 플랫폼으로 현재 세션 인계"
++    branch: "현재 대화를 기준으로 새 분기 세션 시작"
++    compress: "과거 대화 컨텍스트 압축하여 최적화"
++    rollback: "파일 체크포인트 복원 또는 목록 보기"
++    snapshot: "설정 및 에이전트 상태 스냅샷 관리"
++    stop: "실행 중인 모든 백그라운드 프로세스 강제 종료"
++    approve: "대기 중인 위험 명령 실행 승인"
++    deny: "대기 중인 위험 명령 실행 거부"
++    background: "새 세션에서 프롬프트를 백그라운드로 실행"
++    agents: "활성화된 에이전트와 백그라운드 작업 조회"
++    queue: "방해 없이 다음 턴에 실행할 프롬프트 예약"
++    steer: "다음 도구 완료 후 실행할 메시지 예약 주입"
++    goal: "지속해서 추적 및 자율 수행할 장기 목표 설정"
++    subgoal: "목표 아래에 부가 하위 조건 추가 및 관리"
++    status: "세션 세부 사항 및 실행 정보 상태 출력"
++    whoami: "현재 사용자의 권한 등급 및 정보 표시"
++    profile: "사용 중인 멀티 에이전트 프로필 정보 출력"
++    sethome: "현재 채팅방을 기본 알림/작업 수신 홈으로 설정"
++    resume: "저장해둔 이름 있는 세션 불러오기"
++    sessions: "이전 세션 목록 탐색 및 복원"
++    config: "현재 설정 파일 내용 확인"
++    model: "사용할 언어 모델 또는 제공자 전환"
++    codex_runtime: "OpenAI Codex 런타임 제어"
++    gquota: "구글 코드 어시스트 쿼타 사용량 확인"
++    personality: "지정된 프리셋 페르소나/성격 입히기"
++    statusbar: "하단 정보 표시줄 상태 토글"
++    verbose: "도구 실행 상황 표시 레벨 변경"
++    footer: "답변 하단 메타데이터 푸터 설정"
++    yolo: "위험 명령 승인 건너뛰는 YOLO 모드 토글"
++    reasoning: "생각 과정 공개 수준 및 추론 노력도 조절"
++    fast: "OpenAI/Anthropic 우선 처리 및 빠른 모드 토글"
++    skin: "CLI 화면 테마 및 스킨 변경"
++    indicator: "에이전트 구동 표시기Kaomoji 스타일 변경"
++    voice: "음성 모드 및 TTS 기능 설정"
++    busy: "에이전트 작동 중 Enter 입력 동작 제어"
++    tools: "개별 도구 사용 제한 및 상태 설정"
++    toolsets: "지원하는 도구 모음 확인"
++    skills: "스킬을 설치, 관리 또는 검색"
++    bundles: "스킬 다발 묶음 리스트 확인"
++    cron: "특정 주기마다 자율 실행할 크론 작업 관리"
++    curator: "에이전트 작성 스킬의 자율 백업/아카이브 관리"
++    kanban: "협업용 공유 칸반 보드 작업 예약 및 동기화"
++    reload: "현재 세션에 .env 파일의 환경 변수 로드"
++    reload_mcp: "구성된 모든 MCP 서버 재로드"
++    reload_skills: "스킬 폴더 변경 사항 재탐색하여 스킬 적용"
++    browser: "브라우저 도구 제어용 CDP 주소 연결"
++    plugins: "플러그인 리스트 확인 및 상태 출력"
++    help: "도움말 및 이용 가능한 명령어 요약 확인"
++    restart: "활성 대화 임무 종료 후 게이트웨이 안전 재시작"
++    usage: "이번 세션에서 사용한 토큰 양과 예상 비용 확인"
++    insights: "일정 기간 동안의 사용 패턴 및 상세 분석"
++    platforms: "연결된 플랫폼 상태 확인"
++    platform: "오류가 발생한 플랫폼 채널 재개/중지 제어"
++    copy: "마지막 답변을 클립보드로 복사"
++    paste: "클립보드 이미지를 현재 대화에 첨부"
++    image: "대화 분석용 로컬 이미지 파일 첨부"
++    update: "헤르메스를 최신 안정 버전으로 자동 업데이트"
++    debug: "진단 및 지원용 시스템 디버그 보고서 링크 업로드"
++    quit: "현재 터미널에서 에이전트 구동 종료"
++
 diff --git a/run_agent.py b/run_agent.py
 index 5b89839b6..40eb5abff 100644
 --- a/run_agent.py
@@ -2280,243 +2408,3 @@ index 42948e1c4..01bb994e5 100644
  def test_chat_messages_to_responses_input_reasoning_only_has_following_item(monkeypatch):
      """When converting a reasoning-only interim message to Responses API input,
      the reasoning items must be followed by an assistant message (even if empty)
-diff --git a/agent/antigravity_stream_grpc.py b/agent/antigravity_stream_grpc.py
-new file mode 100644
-index 000000000..c11fb3290
---- /dev/null
-+++ b/agent/antigravity_stream_grpc.py
-@@ -0,0 +1,163 @@
-+"""Context window compression utilities for Antigravity REST streaming.
-+
-+Adds ``contextWindowCompression`` to the inner ``request`` dict sent to
-+``v1internal:streamGenerateContent``.  This tells the server to apply a
-+sliding-window compression strategy when the conversation grows past
-+``triggerTokens``, trimming it back to ``targetTokens``.
-+
-+The feature originates in the BidiGenerateContent proto but the REST
-+streaming endpoint *may* honour the same field.  If the server ignores
-+it, no harm done — the field is silently dropped.  If accepted, it
-+enables automatic server-side context compression and prevents hard
-+context-length failures on long sessions.
-+
-+JSON shape injected into the request body::
-+
-+    {
-+        "contextWindowCompression": {
-+            "triggerTokens": 100000,
-+            "slidingWindow": {
-+                "targetTokens": 60000
-+            }
-+        }
-+    }
-+
-+Proto schema (reconstructed from agy binary)::
-+
-+    message ContextWindowCompressionConfig {
-+        optional int32 trigger_tokens = 1;
-+        oneof compression_mechanism {
-+            SlidingWindow sliding_window = 2;
-+        }
-+    }
-+
-+    message SlidingWindow {
-+        optional int32 target_tokens = 1;
-+    }
-+"""
-+
-+from __future__ import annotations
-+
-+import logging
-+import os
-+from typing import Any, Dict, Optional, Tuple
-+
-+logger = logging.getLogger(__name__)
-+
-+# ---------------------------------------------------------------------------
-+# Default token budgets per model family
-+# ---------------------------------------------------------------------------
-+# (trigger_tokens, target_tokens)
-+#
-+# trigger_tokens: when conversation token count reaches this, compression fires
-+# target_tokens:  what the server trims the conversation down to
-+#
-+# Gemini Flash / Pro — 128K context windows
-+_GEMINI_DEFAULTS: Tuple[int, int] = (100_000, 60_000)
-+# Claude — 200K context window
-+_CLAUDE_DEFAULTS: Tuple[int, int] = (160_000, 100_000)
-+# GPT-OSS — 128K context window
-+_GPT_OSS_DEFAULTS: Tuple[int, int] = (100_000, 60_000)
-+# Fallback for unknown models
-+_FALLBACK_DEFAULTS: Tuple[int, int] = (100_000, 60_000)
-+
-+
-+def _defaults_for_model(model: str) -> Tuple[int, int]:
-+    """Return ``(trigger_tokens, target_tokens)`` for the given model name."""
-+    lower = (model or "").lower()
-+    if "claude" in lower:
-+        return _CLAUDE_DEFAULTS
-+    if "gpt-oss" in lower:
-+        return _GPT_OSS_DEFAULTS
-+    # Gemini Flash / Pro / anything else from Google
-+    return _GEMINI_DEFAULTS
-+
-+
-+def _is_compression_enabled() -> bool:
-+    """Check the ``HERMES_ANTIGRAVITY_CONTEXT_COMPRESSION`` env var.
-+
-+    The REST endpoint currently rejects this field on some accounts/endpoints,
-+    so it is opt-in only. Values ``1``, ``true``, ``yes``, ``on``, ``enabled``
-+    enable the experimental server-side compression hint.
-+    """
-+    raw = os.getenv("HERMES_ANTIGRAVITY_CONTEXT_COMPRESSION", "").strip().lower()
-+    return raw in {"1", "true", "yes", "on", "enabled"}
-+
-+
-+# ---------------------------------------------------------------------------
-+# Public helpers
-+# ---------------------------------------------------------------------------
-+
-+def build_context_window_compression_config(
-+    trigger_tokens: int,
-+    target_tokens: int,
-+) -> Dict[str, Any]:
-+    """Build the JSON dict for ``contextWindowCompression``.
-+
-+    >>> build_context_window_compression_config(100_000, 60_000)
-+    {'triggerTokens': 100000, 'slidingWindow': {'targetTokens': 60000}}
-+    """
-+    return {
-+        "triggerTokens": int(trigger_tokens),
-+        "slidingWindow": {
-+            "targetTokens": int(target_tokens),
-+        },
-+    }
-+
-+
-+def inject_context_compression(
-+    request_body: Dict[str, Any],
-+    *,
-+    trigger_tokens: Optional[int] = None,
-+    target_tokens: Optional[int] = None,
-+    model: str = "",
-+) -> None:
-+    """Add ``contextWindowCompression`` to *request_body* in-place.
-+
-+    If *trigger_tokens* or *target_tokens* are ``None``, defaults are chosen
-+    based on the *model* name (see ``_defaults_for_model``).
-+
-+    Respects the ``HERMES_ANTIGRAVITY_CONTEXT_COMPRESSION`` env var — when set
-+    to a falsy value the function is a no-op.
-+
-+    The function is idempotent: calling it twice with the same parameters
-+    overwrites with the same values.
-+
-+    Parameters
-+    ----------
-+    request_body:
-+        The inner ``request`` dict that will be sent inside the Antigravity
-+        wrapped body.  Modified in-place.
-+    trigger_tokens:
-+        When to trigger compression (total token count).
-+    target_tokens:
-+        Target size after compression.
-+    model:
-+        Model name used to pick defaults when explicit values are not given.
-+    """
-+    if not _is_compression_enabled():
-+        return
-+
-+    default_trigger, default_target = _defaults_for_model(model)
-+    effective_trigger = trigger_tokens if trigger_tokens is not None else default_trigger
-+    effective_target = target_tokens if target_tokens is not None else default_target
-+
-+    # Sanity: target must be less than trigger
-+    if effective_target >= effective_trigger:
-+        logger.warning(
-+            "Context compression target_tokens (%d) >= trigger_tokens (%d); skipping",
-+            effective_target,
-+            effective_trigger,
-+        )
-+        return
-+
-+    request_body["contextWindowCompression"] = build_context_window_compression_config(
-+        effective_trigger,
-+        effective_target,
-+    )
-+    logger.debug(
-+        "Injected contextWindowCompression: trigger=%d target=%d (model=%s)",
-+        effective_trigger,
-+        effective_target,
-+        model or "<unknown>",
-+    )
-diff --git a/tests/agent/test_google_antigravity_oauth_cli_bridge.py b/tests/agent/test_google_antigravity_oauth_cli_bridge.py
-new file mode 100644
-index 000000000..007904042
---- /dev/null
-+++ b/tests/agent/test_google_antigravity_oauth_cli_bridge.py
-@@ -0,0 +1,65 @@
-+import json
-+import time
-+from datetime import datetime, timedelta, timezone
-+
-+
-+def test_antigravity_load_imports_cli_token_when_hermes_token_missing(tmp_path, monkeypatch):
-+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-+    from agent import google_antigravity_oauth as oauth
-+
-+    hermes_home = tmp_path / "hermes"
-+    home = tmp_path / "home"
-+    cli_path = home / ".gemini" / "antigravity-cli" / "antigravity-oauth-token"
-+    cli_path.parent.mkdir(parents=True)
-+    expiry = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat().replace("+00:00", "Z")
-+    cli_path.write_text(
-+        json.dumps(
-+            {
-+                "access_token": "cli-access",
-+                "refresh_token": "cli-refresh",
-+                "token_type": "Bearer",
-+                "expiry": expiry,
-+            }
-+        ),
-+        encoding="utf-8",
-+    )
-+
-+    token = set_hermes_home_override(hermes_home)
-+    monkeypatch.setenv("HOME", str(home))
-+    try:
-+        creds = oauth.load_credentials()
-+    finally:
-+        reset_hermes_home_override(token)
-+
-+    assert creds is not None
-+    assert creds.access_token == "cli-access"
-+    assert creds.refresh_token == "cli-refresh"
-+    assert creds.expires_ms > int(time.time() * 1000)
-+
-+
-+def test_antigravity_save_mirrors_hermes_token_to_cli_shape(tmp_path, monkeypatch):
-+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-+    from agent import google_antigravity_oauth as oauth
-+
-+    hermes_home = tmp_path / "hermes"
-+    home = tmp_path / "home"
-+    monkeypatch.setenv("HOME", str(home))
-+    token = set_hermes_home_override(hermes_home)
-+    try:
-+        oauth.save_credentials(
-+            oauth.GoogleCredentials(
-+                access_token="hermes-access",
-+                refresh_token="hermes-refresh",
-+                expires_ms=int((time.time() + 3600) * 1000),
-+                email="user@example.com",
-+            )
-+        )
-+    finally:
-+        reset_hermes_home_override(token)
-+
-+    cli_path = home / ".gemini" / "antigravity-cli" / "antigravity-oauth-token"
-+    data = json.loads(cli_path.read_text(encoding="utf-8"))
-+    assert data["access_token"] == "hermes-access"
-+    assert data["refresh_token"] == "hermes-refresh"
-+    assert data["token_type"] == "Bearer"
-+    assert data["expiry"].endswith("Z")
