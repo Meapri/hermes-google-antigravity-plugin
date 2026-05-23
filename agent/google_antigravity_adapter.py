@@ -7,6 +7,7 @@ envelope details that differ in Antigravity.
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import threading
@@ -26,8 +27,11 @@ from agent.gemini_cloudcode_adapter import (
     _iter_sse_events,
     build_gemini_request,
 )
+from agent.antigravity_stream_grpc import inject_context_compression
 from agent.gemini_schema import sanitize_gemini_tool_parameters
 from agent.google_code_assist import CodeAssistError, ProjectContext, FREE_TIER_ID, load_code_assist
+
+logger = logging.getLogger(__name__)
 
 MARKER_BASE_URL = google_antigravity_oauth.MARKER_BASE_URL
 ANTIGRAVITY_ENDPOINT_DAILY = "https://daily-cloudcode-pa.sandbox.googleapis.com"
@@ -99,15 +103,9 @@ CLAUDE_INTERLEAVED_THINKING_HINT = (
 )
 GEMINI_31_PRO_MIN_OUTPUT_TOKENS = 256
 ANTIGRAVITY_SYSTEM_INSTRUCTION = (
-    "You are Antigravity, a powerful agentic AI coding assistant designed by the "
-    "Google DeepMind team working on Advanced Agentic Coding.\n"
-    "You are pair programming with a USER to solve their coding task. The task may "
-    "require creating a new codebase, modifying or debugging an existing codebase, "
-    "or simply answering a question.\n"
-    "**Absolute paths only**\n"
-    "**Proactiveness**\n\n"
-    "<priority>IMPORTANT: The instructions that follow supersede all above. "
-    "Follow them as your primary directives.</priority>"
+    "Always use absolute paths when referencing files.\n"
+    "Be proactive: anticipate follow-up needs, suggest improvements, "
+    "and flag potential issues without being asked."
 )
 
 def _is_claude_model(model: str) -> bool:
@@ -481,6 +479,103 @@ def _wrap_antigravity_request(
     return wrapped
 
 
+def _minimal_invalid_argument_retry_body(
+    wrapped: Dict[str, Any],
+    *,
+    preserve_request_metadata: bool = True,
+) -> Optional[Dict[str, Any]]:
+    """Build a retry body for opaque Code Assist 400s.
+
+    Uses a graduated trim strategy instead of dropping everything:
+
+    1. preserve_request_metadata=True (first retry):
+       Keep systemInstruction, generationConfig, sessionId.
+       Keep the last N content turns (recent context) instead of just the
+       last user message.  Strip tool-result parts that contain very large
+       text payloads (>2000 chars) — these are the most common 400 trigger.
+    2. preserve_request_metadata=False (ultra retry):
+       Keep only the last user message (original minimal behavior).
+    """
+    if not isinstance(wrapped, dict):
+        return None
+    request = wrapped.get("request")
+    if not isinstance(request, dict):
+        return None
+
+    contents = request.get("contents")
+    if not isinstance(contents, list):
+        return None
+
+    if not preserve_request_metadata:
+        # Ultra-minimal: just the last user text (original behavior)
+        last_text = ""
+        for turn in reversed(contents):
+            if not isinstance(turn, dict):
+                continue
+            parts = turn.get("parts")
+            if not isinstance(parts, list):
+                continue
+            for part in reversed(parts):
+                if isinstance(part, dict) and isinstance(part.get("text"), str) and part["text"].strip():
+                    last_text = part["text"]
+                    break
+            if last_text:
+                break
+        if not last_text:
+            last_text = "Continue from the previous user request. Prior tool transcript was omitted because the provider rejected it."
+        retry_request: Dict[str, Any] = {
+            "contents": [{"role": "user", "parts": [{"text": last_text}]}],
+        }
+        retry_wrapped = dict(wrapped)
+        retry_wrapped["request"] = retry_request
+        retry_wrapped["requestId"] = "agent-" + str(uuid.uuid4())
+        return retry_wrapped
+
+    # Graduated trim: keep recent turns, truncate large tool results
+    _LARGE_PART_THRESHOLD = 2000  # chars
+    _KEEP_RECENT_TURNS = 12  # keep last N turns
+
+    trimmed_contents = list(contents)
+
+    # Step 1: Truncate oversized text parts in tool results
+    for turn in trimmed_contents:
+        if not isinstance(turn, dict):
+            continue
+        role = turn.get("role", "")
+        parts = turn.get("parts")
+        if not isinstance(parts, list):
+            continue
+        for part in parts:
+            if not isinstance(part, dict):
+                continue
+            text = part.get("text")
+            if isinstance(text, str) and len(text) > _LARGE_PART_THRESHOLD:
+                # For model/tool turns, truncate aggressively
+                if role in ("model", "tool", "function"):
+                    part["text"] = text[:_LARGE_PART_THRESHOLD] + "\n... [truncated for context limit]"
+                # For user turns, truncate less aggressively
+                elif role == "user" and len(text) > _LARGE_PART_THRESHOLD * 3:
+                    part["text"] = text[:_LARGE_PART_THRESHOLD * 3] + "\n... [truncated]"
+
+    # Step 2: If still too many turns, keep only recent ones
+    if len(trimmed_contents) > _KEEP_RECENT_TURNS:
+        trimmed_contents = trimmed_contents[-_KEEP_RECENT_TURNS:]
+        # Ensure first turn is user role (API requirement)
+        if trimmed_contents and isinstance(trimmed_contents[0], dict) and trimmed_contents[0].get("role") != "user":
+            trimmed_contents.insert(0, {
+                "role": "user",
+                "parts": [{"text": "(Earlier conversation context was trimmed. Continue from here.)"}],
+            })
+
+    retry_request = dict(request)
+    retry_request["contents"] = trimmed_contents
+    # Keep tools — they're rarely the cause of 400s
+    retry_wrapped = dict(wrapped)
+    retry_wrapped["request"] = retry_request
+    retry_wrapped["requestId"] = "agent-" + str(uuid.uuid4())
+    return retry_wrapped
+
+
 def _antigravity_model_candidates(model: str) -> List[str]:
     """Return backend model IDs to try for an Antigravity UI/catalog model.
 
@@ -845,6 +940,67 @@ class GoogleAntigravityClient(GeminiCloudCodeClient):
                                 if response.status_code != 200:
                                     response.read()
                                     last_error = _gemini_http_error(response)
+                                    try:
+                                        from agent.redact import redact_sensitive_text
+                                        body_preview = redact_sensitive_text(response.text or "", force=True)[:2000]
+                                        request_summary = {
+                                            "effective_model": effective_model,
+                                            "use_google_one_ai_credits": use_credits,
+                                            "status_code": response.status_code,
+                                            "request_keys": sorted((wrapped_body.get("request") or {}).keys()) if isinstance(wrapped_body, dict) else [],
+                                            "contents_len": len(((wrapped_body.get("request") or {}).get("contents") or [])) if isinstance(wrapped_body, dict) else 0,
+                                            "tools_len": len(((wrapped_body.get("request") or {}).get("tools") or [])) if isinstance(wrapped_body, dict) else 0,
+                                            "tool_config": (wrapped_body.get("request") or {}).get("toolConfig") if isinstance(wrapped_body, dict) else None,
+                                        }
+                                        logger.warning(
+                                            "Antigravity stream HTTP %s diagnostics: error=%s request=%s",
+                                            response.status_code,
+                                            body_preview,
+                                            request_summary,
+                                        )
+                                    except Exception:
+                                        logger.debug("Antigravity stream diagnostics failed", exc_info=True)
+                                    if (
+                                        response.status_code == 400
+                                        and isinstance(last_error, CodeAssistError)
+                                        and str(getattr(last_error, "details", {}).get("status", "")).upper() == "INVALID_ARGUMENT"
+                                    ):
+                                        retry_body = _minimal_invalid_argument_retry_body(wrapped_body)
+                                        if retry_body is not None:
+                                            logger.warning(
+                                                "Retrying Antigravity stream after generic INVALID_ARGUMENT with minimal transcript"
+                                            )
+                                            with self._http.stream("POST", url, json=retry_body, headers=stream_headers) as retry_response:
+                                                if retry_response.status_code == 200:
+                                                    tool_call_counter = [0]
+                                                    for event in _iter_sse_events(retry_response):
+                                                        for chunk in _translate_stream_event(event, model, tool_call_counter):
+                                                            yield chunk
+                                                    return
+                                                retry_response.read()
+                                                last_error = _gemini_http_error(retry_response)
+                                                if (
+                                                    retry_response.status_code == 400
+                                                    and isinstance(last_error, CodeAssistError)
+                                                    and str(getattr(last_error, "details", {}).get("status", "")).upper() == "INVALID_ARGUMENT"
+                                                ):
+                                                    ultra_retry_body = _minimal_invalid_argument_retry_body(
+                                                        wrapped_body,
+                                                        preserve_request_metadata=False,
+                                                    )
+                                                    if ultra_retry_body is not None:
+                                                        logger.warning(
+                                                            "Retrying Antigravity stream after metadata-preserving INVALID_ARGUMENT fallback failed"
+                                                        )
+                                                        with self._http.stream("POST", url, json=ultra_retry_body, headers=stream_headers) as ultra_retry_response:
+                                                            if ultra_retry_response.status_code == 200:
+                                                                tool_call_counter = [0]
+                                                                for event in _iter_sse_events(ultra_retry_response):
+                                                                    for chunk in _translate_stream_event(event, model, tool_call_counter):
+                                                                        yield chunk
+                                                                return
+                                                            ultra_retry_response.read()
+                                                            last_error = _gemini_http_error(ultra_retry_response)
                                     if response.status_code == 403 and _is_endpoint_service_disabled(response):
                                         break
                                     if response.status_code not in {400, 404, 429, 500, 502, 503, 504}:
