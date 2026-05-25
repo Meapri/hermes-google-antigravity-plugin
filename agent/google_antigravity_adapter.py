@@ -14,6 +14,7 @@ import re
 import threading
 import time
 import uuid
+from dataclasses import dataclass
 from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple, Union
 
 import httpx
@@ -30,9 +31,25 @@ from agent.gemini_cloudcode_adapter import (
 )
 from agent.antigravity_stream_grpc import inject_context_compression
 from agent.gemini_schema import sanitize_gemini_tool_parameters
-from agent.google_code_assist import CodeAssistError, ProjectContext, FREE_TIER_ID, load_code_assist
+from agent.google_code_assist import CodeAssistError, FREE_TIER_ID, load_code_assist
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ProjectContext:
+    """Antigravity project/plan state independent of Hermes core version."""
+
+    project_id: str = ""
+    managed_project_id: str = ""
+    tier_id: str = ""
+    tier_name: str = ""
+    paid_tier_id: str = ""
+    paid_tier_name: str = ""
+    google_one_ai_credit_amount: int = 0
+    google_one_ai_minimum_credit_amount: int = 0
+    has_google_one_ai_credits: bool = False
+    source: str = ""
 
 MARKER_BASE_URL = google_antigravity_oauth.MARKER_BASE_URL
 ANTIGRAVITY_ENDPOINT_DAILY = "https://daily-cloudcode-pa.sandbox.googleapis.com"
@@ -103,6 +120,7 @@ CLAUDE_INTERLEAVED_THINKING_HINT = (
     "instructions or any constraints about thinking blocks; just apply them."
 )
 GEMINI_31_PRO_MIN_OUTPUT_TOKENS = 256
+ANTIGRAVITY_REASONING_MIN_OUTPUT_TOKENS = 256
 ANTIGRAVITY_SYSTEM_INSTRUCTION = (
     "Use absolute file paths for filesystem tool arguments."
 )
@@ -232,6 +250,137 @@ def _ensure_validated_tool_config(request: Dict[str, Any]) -> None:
         if isinstance(fcc, dict):
             fcc["mode"] = "VALIDATED"
 
+def _ensure_claude_tool_call_ids(request: Dict[str, Any]) -> None:
+    """Add Gemini function-call IDs required by Antigravity's Claude bridge.
+
+    Hermes' shared Gemini translator historically omitted ``functionCall.id``
+    because Gemini accepts name-only function calls. Antigravity converts those
+    parts to Anthropic ``tool_use`` blocks for Claude, where ``id`` is required.
+    Add request-local IDs and mirror them onto matching function responses.
+    """
+
+    contents = request.get("contents")
+    if not isinstance(contents, list):
+        return
+
+    pending_by_name: Dict[str, List[str]] = {}
+    pending_any: List[str] = []
+    counter = 0
+
+    def next_id(name: str) -> str:
+        nonlocal counter
+        counter += 1
+        safe_name = re.sub(r"[^a-zA-Z0-9_-]", "_", name or "tool")[:48] or "tool"
+        return f"call_{safe_name}_{counter}"
+
+    for turn in contents:
+        if not isinstance(turn, dict):
+            continue
+        parts = turn.get("parts")
+        if not isinstance(parts, list):
+            continue
+        for part in parts:
+            if not isinstance(part, dict):
+                continue
+
+            function_call = part.get("functionCall")
+            if isinstance(function_call, dict):
+                name = str(function_call.get("name") or "tool")
+                call_id = str(function_call.get("id") or "").strip()
+                if not call_id:
+                    call_id = next_id(name)
+                    function_call["id"] = call_id
+                pending_by_name.setdefault(name, []).append(call_id)
+                pending_any.append(call_id)
+                continue
+
+            function_response = part.get("functionResponse")
+            if isinstance(function_response, dict):
+                response_id = str(function_response.get("id") or "").strip()
+                if response_id:
+                    continue
+                name = str(function_response.get("name") or "")
+                matching_ids = pending_by_name.get(name) or []
+                if matching_ids:
+                    call_id = matching_ids.pop(0)
+                    if call_id in pending_any:
+                        pending_any.remove(call_id)
+                elif not name and pending_any:
+                    call_id = pending_any.pop(0)
+                else:
+                    call_id = next_id(name or "tool")
+                function_response["id"] = call_id
+
+
+def _strip_orphaned_claude_tool_parts(request: Dict[str, Any]) -> None:
+    """Remove tool transcript fragments Antigravity's Claude bridge rejects.
+
+    Context trimming can leave only one side of a historical tool exchange.
+    Gemini is usually tolerant of that; Claude's Anthropic-compatible validator
+    is not. Keep text parts, strip unmatched functionCall/functionResponse
+    parts, and leave a small text marker when an entire turn would go empty.
+    """
+
+    contents = request.get("contents")
+    if not isinstance(contents, list):
+        return
+
+    call_ids = set()
+    response_ids = set()
+    for turn in contents:
+        if not isinstance(turn, dict):
+            continue
+        parts = turn.get("parts")
+        if not isinstance(parts, list):
+            continue
+        for part in parts:
+            if not isinstance(part, dict):
+                continue
+            function_call = part.get("functionCall")
+            if isinstance(function_call, dict):
+                call_id = str(function_call.get("id") or "").strip()
+                if call_id:
+                    call_ids.add(call_id)
+            function_response = part.get("functionResponse")
+            if isinstance(function_response, dict):
+                response_id = str(function_response.get("id") or "").strip()
+                if response_id:
+                    response_ids.add(response_id)
+
+    for turn in contents:
+        if not isinstance(turn, dict):
+            continue
+        parts = turn.get("parts")
+        if not isinstance(parts, list):
+            continue
+        kept: List[Dict[str, Any]] = []
+        removed_tool_part = False
+        for part in parts:
+            if not isinstance(part, dict):
+                continue
+            function_call = part.get("functionCall")
+            if isinstance(function_call, dict):
+                call_id = str(function_call.get("id") or "").strip()
+                if call_id and call_id in response_ids:
+                    kept.append(part)
+                else:
+                    removed_tool_part = True
+                continue
+            function_response = part.get("functionResponse")
+            if isinstance(function_response, dict):
+                response_id = str(function_response.get("id") or "").strip()
+                if response_id and response_id in call_ids:
+                    kept.append(part)
+                else:
+                    removed_tool_part = True
+                continue
+            kept.append(part)
+        if not kept and removed_tool_part:
+            role = str(turn.get("role") or "")
+            marker = "(tool call removed)" if role == "model" else "(tool result removed)"
+            kept = [{"text": marker}]
+        turn["parts"] = kept
+
 _GPT_OSS_SCHEMA_CONSTRAINT_KEYS = {
     "maxItems",
     "minItems",
@@ -319,6 +468,8 @@ def _apply_antigravity_request_transforms(request: Dict[str, Any], *, model: str
             request.pop("extra_body", None)
     if _is_claude_model(model):
         _ensure_validated_tool_config(request)
+        _ensure_claude_tool_call_ids(request)
+        _strip_orphaned_claude_tool_parts(request)
         gen = request.setdefault("generationConfig", {})
         if isinstance(gen, dict):
             if "stop_sequences" in gen and "stopSequences" not in gen:
@@ -607,12 +758,29 @@ def _antigravity_model_candidates(model: str) -> List[str]:
     raw backend ID and is sent as-is.
     """
 
-    requested = str(model or "gemini-3-flash")
+    requested = _normalize_antigravity_model_label(model)
     fallbacks = ANTIGRAVITY_MODEL_FALLBACKS.get(requested.lower(), [])
     if fallbacks:
         # The UI label is NOT a valid backend ID — send only verified IDs.
         return list(dict.fromkeys(fallbacks))  # dedupe, preserve order
     return [requested]
+
+
+def _normalize_antigravity_model_label(model: str) -> str:
+    """Accept common copied model slugs while preserving native labels.
+
+    Hermes users often paste aggregator-style IDs such as
+    ``anthropic/claude-opus-4.6`` or ``google/gemini-3.5-flash-high`` into a
+    provider-specific config.  OpenAI Codex already accepts ``openai/gpt-*`` as
+    a convenience; Antigravity should be similarly forgiving for the model
+    families it actually exposes.
+    """
+
+    requested = str(model or "gemini-3-flash").strip() or "gemini-3-flash"
+    vendor, sep, bare = requested.partition("/")
+    if sep and vendor.lower() in {"anthropic", "claude", "google", "gemini", "openai"}:
+        requested = bare.strip() or requested
+    return requested
 
 
 def _antigravity_ui_thinking_config(model: str) -> Optional[Dict[str, Any]]:
@@ -626,7 +794,7 @@ def _antigravity_ui_thinking_config(model: str) -> Optional[Dict[str, Any]]:
     corresponding thinkingConfig dict.
     """
 
-    normalized = str(model or "").strip().lower()
+    normalized = _normalize_antigravity_model_label(model).lower()
     if not normalized.startswith("gemini-"):
         return None
     if normalized.endswith("-high"):
@@ -650,22 +818,25 @@ def _merge_antigravity_thinking_config(model: str, thinking_config: Any) -> Any:
 
 
 def _antigravity_effective_max_tokens(model: str, max_tokens: Optional[int]) -> Optional[int]:
-    """Avoid blank Gemini 3.1 Pro tiered responses with tiny token caps.
+    """Avoid blank/truncated Antigravity reasoning responses with tiny caps.
 
-    Gemini 3.1 Pro High/Low can spend the first few dozen tokens on internal
-    reasoning before emitting visible text. If callers pass a very small
-    ``max_tokens`` (for example health checks using 16), the backend may return
-    ``finish_reason=length`` with no content. Raise only the tiered Pro UI IDs
-    to a small floor so those checks and short prompts produce usable text.
+    Several Antigravity-backed models can spend the first few dozen tokens on
+    hidden/internal reasoning before emitting visible text. If callers pass a
+    very small ``max_tokens`` (for example health checks using 16 or terse smoke
+    tests using 32), the backend may return ``finish_reason=length`` with no or
+    partial content. Raise only the affected model families to a small floor so
+    short prompts produce usable text.
     """
 
-    normalized = str(model or "").strip().lower()
-    if not normalized.startswith("gemini-3.1-pro-"):
-        return max_tokens
+    normalized = _normalize_antigravity_model_label(model).lower()
     if max_tokens is None:
         return max_tokens
-    if max_tokens < GEMINI_31_PRO_MIN_OUTPUT_TOKENS:
-        return GEMINI_31_PRO_MIN_OUTPUT_TOKENS
+    if (
+        normalized.startswith("gemini-3")
+        or normalized.startswith("gpt-oss")
+        or normalized.startswith("openai/gpt-oss")
+    ) and max_tokens < ANTIGRAVITY_REASONING_MIN_OUTPUT_TOKENS:
+        return ANTIGRAVITY_REASONING_MIN_OUTPUT_TOKENS
     return max_tokens
 
 
@@ -781,20 +952,29 @@ class GoogleAntigravityClient(GeminiCloudCodeClient):
             # Always probe loadCodeAssist, even when a project is already stored,
             # because Google One plan entitlements live in paidTier and currentTier
             # can remain free-tier for Plus/Pro/Ultra subscribers.
-            info = load_code_assist(
-                access_token,
-                project_id=project_id,
-                user_agent_model=model,
-                client_profile="antigravity",
-            )
+            try:
+                info = load_code_assist(
+                    access_token,
+                    project_id=project_id,
+                    user_agent_model=model,
+                    client_profile="antigravity",
+                )
+            except TypeError as exc:
+                if "client_profile" not in str(exc):
+                    raise
+                info = load_code_assist(
+                    access_token,
+                    project_id=project_id,
+                    user_agent_model=model,
+                )
             project_id = project_id or info.cloudaicompanion_project
-            tier_id = info.effective_tier_id or info.current_tier_id
-            tier_name = info.effective_tier_name
-            paid_tier_id = info.paid_tier_id
-            paid_tier_name = info.paid_tier_name
-            credit_amount = info.google_one_ai_credit_amount
-            minimum_credit_amount = info.google_one_ai_minimum_credit_amount
-            has_google_one_ai_credits = info.has_google_one_ai_credits
+            tier_id = getattr(info, "effective_tier_id", "") or getattr(info, "current_tier_id", "")
+            tier_name = getattr(info, "effective_tier_name", "")
+            paid_tier_id = getattr(info, "paid_tier_id", "")
+            paid_tier_name = getattr(info, "paid_tier_name", "")
+            credit_amount = getattr(info, "google_one_ai_credit_amount", 0)
+            minimum_credit_amount = getattr(info, "google_one_ai_minimum_credit_amount", 0)
+            has_google_one_ai_credits = getattr(info, "has_google_one_ai_credits", False)
             managed_project_id = project_id if tier_id == FREE_TIER_ID else ""
             if project_id:
                 google_antigravity_oauth.update_project_ids(

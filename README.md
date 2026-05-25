@@ -37,6 +37,8 @@ Curated model IDs (matching the Antigravity UI model picker):
 
 Display-friendly IDs like `gemini-3.5-flash-high` or `gemini-3.1-pro-high` are mapped internally to the real Antigravity backend IDs (e.g. `gemini-3-flash-agent`, `gemini-3.1-pro-low`) and get the appropriate `thinkingConfig.thinkingLevel` (high/medium/low) injected automatically. Claude thinking is likewise controlled by the model name: names containing `thinking` get `include_thoughts: true` injected into the request. Hermes session IDs are hashed before they are sent as Antigravity `sessionId` values, so platform/user identifiers are not exposed verbatim.
 
+Provider-prefixed model IDs copied from other tools are accepted for the supported families, for example `google/gemini-3.1-pro-high`, `anthropic/claude-sonnet-4.6-thinking`, and `openai/gpt-oss-120b`.
+
 ## Install
 
 ```bash
@@ -88,12 +90,12 @@ EOF
 chmod 600 "$HOME/.hermes/.env"
 ```
 
-After that, `./scripts/install.sh` and `hermes login --provider google-antigravity` will pick them up automatically on that machine. The login itself then creates the per-account token file at `$HERMES_HOME/auth/google_antigravity.json`; do not copy or commit that token file.
+After that, `./scripts/install.sh` and `hermes auth add google-antigravity` will pick them up automatically on that machine. The login itself then creates the per-account token file at `$HERMES_HOME/auth/google_antigravity.json`; do not copy or commit that token file.
 
 After installing, restart Hermes and run:
 
 ```bash
-hermes login --provider google-antigravity
+hermes auth add google-antigravity
 ```
 
 or select Google Antigravity from:

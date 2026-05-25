@@ -70,6 +70,30 @@ MSG
   fi
 }
 
+_core_integration_present() {
+  grep -q '"google-antigravity"' "$HERMES_AGENT_DIR/hermes_cli/providers.py" \
+    && grep -q '"google-antigravity"' "$HERMES_AGENT_DIR/hermes_cli/auth_commands.py" \
+    && grep -q 'resolve_antigravity_runtime_credentials' "$HERMES_AGENT_DIR/hermes_cli/auth.py" \
+    && grep -q 'GoogleAntigravityClient' "$HERMES_AGENT_DIR/agent/google_antigravity_adapter.py"
+}
+
+_apply_core_patch_without_copied_runtime() {
+  local patch_file="$1"
+  local check_log="$2"
+  local excludes=(
+    "--exclude=agent/google_antigravity_adapter.py"
+    "--exclude=agent/google_antigravity_oauth.py"
+    "--exclude=tests/agent/test_google_antigravity_adapter.py"
+  )
+
+  if git -C "$HERMES_AGENT_DIR" apply "${excludes[@]}" --check "$patch_file" 2>"$check_log"; then
+    git -C "$HERMES_AGENT_DIR" apply "${excludes[@]}" "$patch_file"
+    echo "Applied Hermes core integration patch, keeping copied Antigravity runtime files from this repo."
+    return 0
+  fi
+  return 1
+}
+
 mkdir -p "$HERMES_HOME/plugins/model-providers/google-antigravity"
 cp "$REPO_ROOT/plugins/model-providers/google-antigravity/__init__.py" \
    "$REPO_ROOT/plugins/model-providers/google-antigravity/plugin.yaml" \
@@ -82,14 +106,23 @@ cp "$REPO_ROOT/agent/antigravity_stream_grpc.py" "$HERMES_AGENT_DIR/agent/"
 _prompt_oauth_credentials
 
 if [[ -s "$REPO_ROOT/patches/hermes-agent-antigravity-core.patch" ]]; then
-  if git -C "$HERMES_AGENT_DIR" apply --check "$REPO_ROOT/patches/hermes-agent-antigravity-core.patch"; then
+  patch_check_log="$(mktemp)"
+  patch_reverse_log="$(mktemp)"
+  if git -C "$HERMES_AGENT_DIR" apply --check "$REPO_ROOT/patches/hermes-agent-antigravity-core.patch" 2>"$patch_check_log"; then
     git -C "$HERMES_AGENT_DIR" apply "$REPO_ROOT/patches/hermes-agent-antigravity-core.patch"
     echo "Applied Hermes core integration patch."
+  elif git -C "$HERMES_AGENT_DIR" apply --reverse --check "$REPO_ROOT/patches/hermes-agent-antigravity-core.patch" 2>"$patch_reverse_log"; then
+    echo "Hermes core integration patch already applied."
+  elif _apply_core_patch_without_copied_runtime "$REPO_ROOT/patches/hermes-agent-antigravity-core.patch" "$patch_check_log"; then
+    true
+  elif _core_integration_present; then
+    echo "Hermes core integration already present."
   else
-    echo "Core patch did not apply cleanly. Your Hermes tree may already include these changes." >&2
+    echo "Core patch did not apply cleanly. Your Hermes tree may already include these changes or may have drifted." >&2
     echo "Review: $REPO_ROOT/patches/hermes-agent-antigravity-core.patch" >&2
   fi
+  rm -f "$patch_check_log" "$patch_reverse_log"
 fi
 
 echo "Installed google-antigravity provider plugin to: $HERMES_HOME/plugins/model-providers/google-antigravity"
-echo "Restart Hermes, then run: hermes login --provider google-antigravity"
+echo "Restart Hermes, then run: hermes auth add google-antigravity"

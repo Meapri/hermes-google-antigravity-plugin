@@ -24,14 +24,20 @@ class GoogleAntigravityProfile(ProviderProfile):
     def build_extra_body(
         self, *, session_id: str | None = None, **context: Any
     ) -> dict[str, Any]:
+        extra: dict[str, Any] = {}
+        if session_id:
+            extra["session_id"] = session_id
         model = str(context.get("model") or "")
         normalized = model.strip().lower()
+        vendor, sep, bare = normalized.partition("/")
+        if sep and vendor in {"google", "gemini"}:
+            normalized = bare.strip() or normalized
         if normalized.startswith("gemini-") and "pro" in normalized:
             if normalized.endswith("-high"):
-                return {"thinking_config": {"thinkingLevel": "high"}}
+                extra["thinking_config"] = {"thinkingLevel": "high"}
             if normalized.endswith("-low"):
-                return {"thinking_config": {"thinkingLevel": "low"}}
-        return {}
+                extra["thinking_config"] = {"thinkingLevel": "low"}
+        return extra
 
 
 google_antigravity = GoogleAntigravityProfile(

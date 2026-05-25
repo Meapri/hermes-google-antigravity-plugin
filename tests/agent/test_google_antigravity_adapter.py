@@ -157,28 +157,40 @@ def test_antigravity_20_ui_models_have_backend_fallbacks():
     candidates = getattr(ag, "_antigravity_model_candidates")
 
     assert candidates("gemini-3.5-flash-high") == ["gemini-3-flash-agent"]
+    assert candidates("google/gemini-3.5-flash-high") == ["gemini-3-flash-agent"]
     assert candidates("gemini-3.5-flash-medium") == ["gemini-3-flash"]
     assert candidates("gemini-3.1-pro-high") == ["gemini-3.1-pro-low"]
+    assert candidates("google/gemini-3.1-pro-high") == ["gemini-3.1-pro-low"]
     assert candidates("gemini-3.1-pro-low") == ["gemini-3.1-pro-low"]
     assert candidates("claude-sonnet-4-6-thinking") == ["claude-sonnet-4-6"]
+    assert candidates("anthropic/claude-sonnet-4.6-thinking") == ["claude-sonnet-4-6"]
     assert candidates("claude-opus-4-6-thinking") == ["claude-opus-4-6-thinking"]
+    assert candidates("anthropic/claude-opus-4.6") == ["claude-opus-4-6-thinking"]
     assert candidates("gpt-oss-120b") == ["gpt-oss-120b-medium"]
+    assert candidates("openai/gpt-oss-120b") == ["gpt-oss-120b-medium"]
 
 
-def test_gemini_31_pro_ui_tiers_infer_thinking_level_and_token_floor():
+def test_reasoning_ui_models_infer_thinking_level_and_token_floor():
     merge = getattr(ag, "_merge_antigravity_thinking_config")
     max_tokens = getattr(ag, "_antigravity_effective_max_tokens")
+    token_floor = getattr(ag, "ANTIGRAVITY_REASONING_MIN_OUTPUT_TOKENS")
 
     assert merge("gemini-3.1-pro-high", None) == {"thinkingLevel": "high"}
+    assert merge("google/gemini-3.1-pro-high", None) == {"thinkingLevel": "high"}
     assert merge("gemini-3.1-pro-low", None) == {"thinkingLevel": "low"}
     assert merge("gemini-3.1-pro-high", {"includeThoughts": True}) == {
         "thinkingLevel": "high",
         "includeThoughts": True,
     }
     assert merge("gemini-3.1-pro-high", {"thinkingLevel": "low"}) == {"thinkingLevel": "low"}
-    assert max_tokens("gemini-3.1-pro-high", 16) == getattr(ag, "GEMINI_31_PRO_MIN_OUTPUT_TOKENS")
-    assert max_tokens("gemini-3.1-pro-low", 16) == getattr(ag, "GEMINI_31_PRO_MIN_OUTPUT_TOKENS")
-    assert max_tokens("gemini-3.5-flash-high", 16) == 16
+    assert max_tokens("gemini-3.1-pro-high", 16) == token_floor
+    assert max_tokens("google/gemini-3.1-pro-high", 16) == token_floor
+    assert max_tokens("gemini-3.1-pro-low", 16) == token_floor
+    assert max_tokens("gemini-3.5-flash-high", 16) == token_floor
+    assert max_tokens("google/gemini-3.5-flash-high", 16) == token_floor
+    assert max_tokens("gpt-oss-120b", 32) == token_floor
+    assert max_tokens("openai/gpt-oss-120b", 32) == token_floor
+    assert max_tokens("claude-opus-4-6-thinking", 16) == 16
 
 
 def test_claude_antigravity_transform_normalizes_tools_and_system_instruction():
@@ -283,6 +295,80 @@ def test_claude_thinking_transform_can_disable_thought_inclusion():
 
     assert request["generationConfig"]["thinkingConfig"] == {"include_thoughts": False}
     assert request["generationConfig"]["maxOutputTokens"] == 4096
+
+
+def test_claude_transform_adds_matching_tool_call_ids_for_antigravity_bridge():
+    request = {
+        "contents": [
+            {"role": "user", "parts": [{"text": "read it"}]},
+            {
+                "role": "model",
+                "parts": [
+                    {"text": "I'll inspect it."},
+                    {"functionCall": {"name": "read_file", "args": {"path": "/tmp/a"}}},
+                ],
+            },
+            {
+                "role": "user",
+                "parts": [
+                    {"functionResponse": {"name": "read_file", "response": {"output": "ok"}}},
+                ],
+            },
+        ],
+    }
+
+    getattr(ag, "_apply_antigravity_request_transforms")(
+        request,
+        model="claude-opus-4-6-thinking",
+    )
+
+    call_id = request["contents"][1]["parts"][1]["functionCall"]["id"]
+    response_id = request["contents"][2]["parts"][0]["functionResponse"]["id"]
+    assert call_id.startswith("call_read_file_")
+    assert response_id == call_id
+
+
+def test_claude_transform_strips_orphaned_tool_parts_after_context_trimming():
+    request = {
+        "contents": [
+            {
+                "role": "model",
+                "parts": [
+                    {"functionCall": {"name": "read_file", "args": {"path": "/tmp/orphan-call"}}},
+                ],
+            },
+            {
+                "role": "user",
+                "parts": [
+                    {"functionResponse": {"name": "write_file", "response": {"output": "orphan result"}}},
+                ],
+            },
+            {
+                "role": "model",
+                "parts": [
+                    {"functionCall": {"name": "list_dir", "args": {"path": "/tmp"}}},
+                ],
+            },
+            {
+                "role": "user",
+                "parts": [
+                    {"functionResponse": {"name": "list_dir", "response": {"output": "ok"}}},
+                ],
+            },
+        ],
+    }
+
+    getattr(ag, "_apply_antigravity_request_transforms")(
+        request,
+        model="claude-opus-4-6-thinking",
+    )
+
+    assert request["contents"][0]["parts"] == [{"text": "(tool call removed)"}]
+    assert request["contents"][1]["parts"] == [{"text": "(tool result removed)"}]
+    kept_call = request["contents"][2]["parts"][0]["functionCall"]
+    kept_response = request["contents"][3]["parts"][0]["functionResponse"]
+    assert kept_response["id"] == kept_call["id"]
+    assert kept_call["name"] == "list_dir"
 
 
 def test_claude_tool_schema_keeps_optional_only_objects_draft_compatible():
