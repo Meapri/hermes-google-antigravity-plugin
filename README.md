@@ -86,21 +86,34 @@ via `hermes config set`. See [After Hermes Update](#after-hermes-update) below.
 When you run `hermes update` (which does `git pull` + `pip install`), the
 `sitecustomize.py` inside the venv may be overwritten. Everything else survives.
 
-**Check what's broken:**
+**Automatic recovery (default).** `install.sh` installs a git `post-merge`
+hook into `~/.hermes/hermes-agent/.git/hooks/`, so the moment `hermes update`
+runs its `git pull`, the hook detects the missing `sitecustomize.py` hooks and
+re-runs recovery for both this plugin and `hermes-claude-auth` automatically —
+no manual steps. It restores the coexistence `sitecustomize.py` (all 4 import
+hooks) and restarts the gateway.
+
+> **Keep the clone in a persistent path** (e.g. `~/hermes-google-antigravity-plugin`),
+> **not `/tmp`**. The post-merge hook looks for the installer at
+> `$HOME/hermes-google-antigravity-plugin/scripts/install.sh` first. If your
+> only clone lives in `/tmp`, a reboot wipes it and auto-recovery silently
+> can't run.
+
+**Manual check / recovery** (if you disabled the hook or want to verify):
 ```bash
-cd hermes-google-antigravity-plugin
+cd ~/hermes-google-antigravity-plugin
 ./scripts/install.sh --check
 ```
 
 **Recover (only restores what's needed):**
 ```bash
-cd hermes-google-antigravity-plugin
+cd ~/hermes-google-antigravity-plugin
 git pull && ./scripts/install.sh --post-update
 ```
 
 **Full recovery (if anything went badly wrong):**
 ```bash
-cd hermes-google-antigravity-plugin
+cd ~/hermes-google-antigravity-plugin
 git pull && ./scripts/install.sh
 ```
 
@@ -122,7 +135,10 @@ Every monkey-patch function verifies Hermes API compatibility via
 `inspect.signature` before applying and returns `False` on mismatch
 instead of crashing. If Hermes internals change, the affected patch
 declines gracefully and the rest keep working. `apply()` reports
-results like `6/6 patches applied` or `5/6 (failed: model_picker)`.
+results like `7/7 patches applied` or `6/7 (failed: model_picker)`.
+
+The 7 patches are: `providers`, `auth_registry`, `runtime_provider`,
+`agent_runtime`, `models_module`, `model_picker`, `auxiliary_client`.
 
 ## Supported Models
 
@@ -190,7 +206,8 @@ Claude thinking is controlled by `include_thoughts: true` in the request. Adding
 | `~/.hermes/hermes-agent/agent/antigravity_quota_grpc.py` | Quota probing via gRPC |
 | `~/.hermes/hermes-agent/agent/antigravity_stream_grpc.py` | Optional context compression |
 | `~/.hermes/patches/antigravity_provider_patch.py` | Runtime monkey-patch — injects provider into Hermes |
-| `<venv>/site-packages/sitecustomize.py` | Import hook — auto-loads on Python startup |
+| `<venv>/site-packages/sitecustomize.py` | Import hook — auto-loads on Python startup (4 hooks: claude + 3 antigravity) |
+| `~/.hermes/hermes-agent/.git/hooks/post-merge` | Auto-recovery hook — restores sitecustomize.py after `hermes update` |
 
 **No Hermes source files are modified.** All provider registration happens through the `sitecustomize.py` MetaPathFinder hook. This is the same pattern used by `hermes-claude-auth`.
 
