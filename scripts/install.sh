@@ -127,11 +127,22 @@ try:
     ok = antigravity_provider_patch._patch_models_module()
     print('models:OK' if ok else 'models:FAIL')
 except Exception as e:
-    print(f'import:FAIL ({e})')
-" 2>/dev/null || echo "verify:FAIL")
+    print(f'import:FAIL ({e})'
+)" 2>/dev/null || echo "verify:FAIL")
 printf "${GREEN}[✓] Patch integrity: %s${RESET}\n" "$PATCH_CHECK"
 
-# ── Step 6: Restart gateway ─────────────────────────────────────────
+# ── Step 6: Install auto-recovery git hook ──────────────────────────
+GIT_HOOKS_DIR="$HERMES_AGENT_DIR/.git/hooks"
+POST_MERGE_HOOK="$GIT_HOOKS_DIR/post-merge"
+if [ -d "$GIT_HOOKS_DIR" ]; then
+    cp "$REPO_ROOT/scripts/post-merge-hook.sh" "$POST_MERGE_HOOK"
+    chmod +x "$POST_MERGE_HOOK"
+    printf "${GREEN}[✓] Installed auto-recovery hook (post-merge)${RESET}\n"
+else
+    printf "${YELLOW}[!] No .git/hooks dir — skipping auto-recovery hook${RESET}\n"
+fi
+
+# ── Step 7: Restart gateway ─────────────────────────────────────────
 if systemctl --user is-active hermes-gateway.service >/dev/null 2>&1; then
     systemctl --user restart hermes-gateway.service
     printf "${GREEN}[✓] Restarted hermes-gateway.service${RESET}\n"
