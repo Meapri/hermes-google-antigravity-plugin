@@ -52,13 +52,19 @@ cd hermes-google-antigravity-plugin
 ./scripts/install.sh
 ```
 
-Then add the credential (auto-detects your existing `agy` CLI token):
+That's it — no separate credential step. The provider reads your existing `agy`
+CLI OAuth token directly at runtime (from
+`~/.gemini/antigravity-cli/antigravity-oauth-token`), so as long as you've run
+`agy` once and logged in, `hermes chat --provider google-antigravity` just works.
+When the token expires it is auto-refreshed via `agy --print`.
 
-```bash
-hermes auth add google-antigravity
-```
+> **Note:** `hermes auth add google-antigravity` is **not** required and is
+> currently a no-op for this provider — Hermes reports
+> `not implemented for auth type oauth yet`. Authentication is handled entirely
+> by the runtime credential resolver against the `agy` token, not by the
+> `hermes auth` credential store. Skip it.
 
-That's it. If you already have `hermes-claude-auth` installed, the `sitecustomize.py` hook handles both patches side by side.
+If you already have `hermes-claude-auth` installed, the `sitecustomize.py` hook handles both patches side by side.
 
 ## Usage
 
@@ -139,6 +145,35 @@ results like `7/7 patches applied` or `6/7 (failed: model_picker)`.
 
 The 7 patches are: `providers`, `auth_registry`, `runtime_provider`,
 `agent_runtime`, `models_module`, `model_picker`, `auxiliary_client`.
+
+### Maintainer notes (import-order traps & verification)
+
+These are hard-won internals worth knowing before you touch the hooks:
+
+- **The `sitecustomize.py` needs all 4 Antigravity import hooks** (plus the
+  Claude hook = 5 total when coexisting). They fire on import of, in order:
+  - `agent.anthropic_adapter` — Claude bypass (hermes-claude-auth)
+  - `hermes_cli.auth` — Antigravity **early** apply:
+    `_patch_auth_registry` + `_patch_providers` + `_patch_auxiliary_client`
+  - `hermes_cli.providers` — full provider apply
+  - `hermes_cli.main` — TUI model picker
+- **Why the `hermes_cli.auth` hook is load-bearing (import-order trap):** if it
+  is missing, `resolve_provider` runs its validation *before* `hermes_cli.providers`
+  is ever imported, so the provider isn't registered yet and you get
+  **`Unknown provider: google-antigravity`**. The nasty part: a direct
+  `python -c "import ..."` test can still PASS (it imports `providers` directly),
+  while `hermes chat` FAILS — because the real startup path validates in a
+  different order. Don't trust a bare-import smoke test here.
+- **Always verify with a real E2E call, not a direct import.** The canonical
+  check is `hermes chat --provider google-antigravity -m gemini-3.5-flash-high
+  -q "OK"`, not `python -c "import agent.google_antigravity_adapter"`.
+- **⚠ Don't run `hermes-claude-auth`'s `install.sh` raw when both are installed.**
+  Its older/`fix`-branch installer can overwrite `sitecustomize.py` with a
+  **Claude-only** hook (no `--check`), silently dropping the 4 Antigravity hooks
+  and bringing back `Unknown provider`. Recover by re-running **this** plugin's
+  `./scripts/install.sh`, which restores the coexistence hook (all 5). The
+  current claude-auth installer is coexistence-aware (it restores the shared
+  multi-hook file first), but verify after any claude-auth reinstall.
 
 ## Supported Models
 
@@ -233,17 +268,18 @@ rm -rf ~/.hermes/plugins/model-providers/google-antigravity
 rm -f ~/.hermes/patches/antigravity_provider_patch.py
 rm -f ~/.hermes/hermes-agent/agent/google_antigravity_*.py
 rm -f ~/.hermes/hermes-agent/agent/antigravity_*.py
-rm -f ~/.hermes/auth/google_antigravity.json*
+rm -f ~/.hermes/auth/google_antigravity*.json*
 
 # Remove auto-recovery hook
 rm -f ~/.hermes/hermes-agent/.git/hooks/post-merge
 
-# Remove credential from pool
-hermes auth remove google-antigravity 1
-
 # Restart gateway
 systemctl --user restart hermes-gateway
 ```
+
+> The provider is never added to the `hermes auth` credential pool (it
+> authenticates directly against the `agy` token), so there is **no**
+> `hermes auth remove` step — deleting the files above is sufficient.
 
 ## Troubleshooting
 
