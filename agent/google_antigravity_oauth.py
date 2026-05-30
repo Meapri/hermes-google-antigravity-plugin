@@ -31,16 +31,80 @@ MARKER_BASE_URL = "cloudcode-pa://antigravity"
 
 # OAuth client credentials are extracted from the agy CLI binary at runtime
 # (same approach as hermes-claude-auth — no secrets committed to git).
+# Startup must not scan the 100MB+ agy binary on every invocation.  Prefer
+# explicit env vars, then a private cache populated by install/update or first
+# fallback extraction, and only fall back to `strings agy` when neither exists.
 # Override via environment variables if needed:
 #   HERMES_ANTIGRAVITY_CLIENT_ID
 #   HERMES_ANTIGRAVITY_CLIENT_SECRET
 ANTIGRAVITY_CLIENT_ID = ""
-ANTIGRAVITY_CLIENT_SECRET=""
+ANTIGRAVITY_CLIENT_SECRET = ""
+
+
+def _client_cache_path() -> Path:
+    return get_hermes_home() / "auth" / "google_antigravity_client.json"
+
+
+def _load_client_from_env_or_cache() -> bool:
+    """Load OAuth client credentials without touching the large agy binary."""
+    global ANTIGRAVITY_CLIENT_ID, ANTIGRAVITY_CLIENT_SECRET
+    if ANTIGRAVITY_CLIENT_ID and ANTIGRAVITY_CLIENT_SECRET:
+        return True
+
+    env_id = os.getenv("HERMES_ANTIGRAVITY_CLIENT_ID", "").strip()
+    env_secret = os.getenv("HERMES_ANTIGRAVITY_CLIENT_SECRET", "").strip()
+    if env_id and env_secret:
+        ANTIGRAVITY_CLIENT_ID = env_id
+        ANTIGRAVITY_CLIENT_SECRET = env_secret
+        return True
+
+    try:
+        data = json.loads(_client_cache_path().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    cache_id = str(data.get("client_id", "") or "").strip()
+    cache_secret = str(data.get("client_secret", "") or "").strip()
+    if cache_id and cache_secret:
+        ANTIGRAVITY_CLIENT_ID = cache_id
+        ANTIGRAVITY_CLIENT_SECRET = cache_secret
+        return True
+    return False
+
+
+def _save_client_cache() -> None:
+    if not (ANTIGRAVITY_CLIENT_ID and ANTIGRAVITY_CLIENT_SECRET):
+        return
+    path = _client_cache_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(
+        {
+            "client_id": ANTIGRAVITY_CLIENT_ID,
+            "client_secret": ANTIGRAVITY_CLIENT_SECRET,
+            "source": "agy strings cache",
+        },
+        indent=2,
+        sort_keys=True,
+    ) + "\n"
+    tmp_path = path.with_suffix(f".tmp.{os.getpid()}")
+    try:
+        fd = os.open(str(tmp_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(payload)
+            fh.flush()
+            os.fsync(fh.fileno())
+        atomic_replace(tmp_path, path)
+    finally:
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except OSError:
+            pass
+
 
 def _extract_from_agy_binary():
     """Extract OAuth client credentials from the agy CLI binary at runtime."""
     global ANTIGRAVITY_CLIENT_ID, ANTIGRAVITY_CLIENT_SECRET
-    if ANTIGRAVITY_CLIENT_ID and ANTIGRAVITY_CLIENT_SECRET:
+    if _load_client_from_env_or_cache():
         return
     import subprocess, re
     try:
@@ -49,37 +113,42 @@ def _extract_from_agy_binary():
         return
     try:
         data = subprocess.check_output(["strings", agy_path], timeout=30)
-        text = data.decode(errors='replace')
+        text = data.decode(errors="replace")
     except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
         return
     ids = re.findall(r'(\d+-[\w]+\.apps\.googleusercontent\.com)', text)
     secrets = re.findall(r'(GOCSPX-[\w]+)', text)
     if ids and secrets:
         # Prefer the NoeFabris/Antigravity client (1071006060591-...) which agy CLI uses.
-        # Match secret by index position in the binary (same order as client IDs).
+        # Some agy builds contain multiple client IDs but only one visible secret;
+        # do not leave the secret blank in that case, or every startup will rescan
+        # the large binary trying to fill it again.
+        chosen_index = 0
         for i, cid in enumerate(ids):
             if cid.startswith("1071006060591"):
                 ANTIGRAVITY_CLIENT_ID = cid
-                if i < len(secrets):
-                    ANTIGRAVITY_CLIENT_SECRET = secrets[i]
+                chosen_index = i
                 break
         if not ANTIGRAVITY_CLIENT_ID:
             ANTIGRAVITY_CLIENT_ID = ids[0]
+        if chosen_index < len(secrets):
+            ANTIGRAVITY_CLIENT_SECRET = secrets[chosen_index]
+        elif len(secrets) == 1:
             ANTIGRAVITY_CLIENT_SECRET = secrets[0]
+        else:
+            ANTIGRAVITY_CLIENT_SECRET = secrets[0]
+        _save_client_cache()
+
 
 def _get_client_id():
-    _extract_from_agy_binary()
-    if not ANTIGRAVITY_CLIENT_ID:
-        import os
-        return os.getenv("HERMES_ANTIGRAVITY_CLIENT_ID", "").strip()
+    if not _load_client_from_env_or_cache():
+        _extract_from_agy_binary()
     return ANTIGRAVITY_CLIENT_ID
 
 
 def _get_client_secret():
-    _extract_from_agy_binary()
-    if not ANTIGRAVITY_CLIENT_SECRET:
-        import os
-        return os.getenv("HERMES_ANTIGRAVITY_CLIENT_SECRET", "").strip()
+    if not _load_client_from_env_or_cache():
+        _extract_from_agy_binary()
     return ANTIGRAVITY_CLIENT_SECRET
 ANTIGRAVITY_SCOPES = (
     "https://www.googleapis.com/auth/cloud-platform "
