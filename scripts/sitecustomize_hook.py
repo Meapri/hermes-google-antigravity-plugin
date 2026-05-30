@@ -94,6 +94,31 @@ def _antigravity_providers_patcher(_module):
     antigravity_provider_patch.apply()
 
 
+def _antigravity_auth_patcher(_module):
+    """Early registry injection (fires on hermes_cli.auth import).
+
+    ``hermes_cli.auth.resolve_provider()`` validates providers against
+    PROVIDER_REGISTRY during the *auth* import — which happens BEFORE
+    ``hermes_cli.providers`` is ever imported on the ``hermes chat
+    --provider google-antigravity`` path. Without this hook the provider
+    fails with "Unknown provider 'google-antigravity'".
+
+    Both helpers are idempotent (guarded by ``if "google-antigravity"
+    not in ...``), so the full apply() on the providers hook re-running
+    them later is harmless.
+
+    Also applies ``_patch_auxiliary_client()`` here so auxiliary tasks
+    (title generation, context compression, vision) that probe
+    ``resolve_provider_client`` early in the gateway lifecycle — before
+    ``hermes_cli.providers`` imports — find google-antigravity already
+    registered, avoiding "unknown provider" races.
+    """
+    import antigravity_provider_patch
+    antigravity_provider_patch._patch_auth_registry()
+    antigravity_provider_patch._patch_providers()
+    antigravity_provider_patch._patch_auxiliary_client()
+
+
 def _antigravity_main_patcher(_module):
     """Model picker patches (fires on hermes_cli.main import, before cmd_model).
 
@@ -112,6 +137,9 @@ def _antigravity_main_patcher(_module):
 
 try:
     _make_import_hook("agent.anthropic_adapter", _claude_patcher, "hermes-claude-auth")
+    _make_import_hook(
+        "hermes_cli.auth", _antigravity_auth_patcher, "hermes-antigravity-auth"
+    )
     _make_import_hook(
         "hermes_cli.providers", _antigravity_providers_patcher, "hermes-antigravity"
     )
