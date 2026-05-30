@@ -59,7 +59,8 @@ def test_antigravity_save_mirrors_hermes_token_to_cli_shape(tmp_path, monkeypatc
 
     cli_path = home / ".gemini" / "antigravity-cli" / "antigravity-oauth-token"
     data = json.loads(cli_path.read_text(encoding="utf-8"))
-    assert data["access_token"] == "hermes-access"
-    assert data["refresh_token"] == "hermes-refresh"
-    assert data["token_type"] == "Bearer"
-    assert data["expiry"].endswith("Z")
+    assert data["auth_method"] == "consumer"
+    assert data["token"]["access_token"] == "hermes-access"
+    assert data["token"]["refresh_token"] == "hermes-refresh"
+    assert data["token"]["token_type"] == "Bearer"
+    assert data["token"]["expiry"].endswith("Z")

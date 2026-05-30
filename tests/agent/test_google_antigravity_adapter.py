@@ -11,7 +11,7 @@ def test_antigravity_headers_use_supported_version_without_gemini_cli_identity_h
     assert "User-Agent" in headers
     assert "Antigravity/2.0.1" in headers["User-Agent"]
     assert "Antigravity/1.18.3" not in headers["User-Agent"]
-    assert "X-Goog-Api-Client" not in headers
+    assert headers["X-Goog-Api-Client"] == "antigravity-cli/2.0.1"
     assert "Client-Metadata" not in headers
 
 
