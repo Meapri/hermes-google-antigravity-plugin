@@ -55,14 +55,17 @@ def _extract_from_agy_binary():
     ids = re.findall(r'(\d+-[\w]+\.apps\.googleusercontent\.com)', text)
     secrets = re.findall(r'(GOCSPX-[\w]+)', text)
     if ids and secrets:
-        # Prefer the consumer client (884354919052-...) over the NoeFabris one
-        for cid in ids:
-            if cid.startswith("884354919052"):
+        # Prefer the NoeFabris/Antigravity client (1071006060591-...) which agy CLI uses.
+        # Match secret by index position in the binary (same order as client IDs).
+        for i, cid in enumerate(ids):
+            if cid.startswith("1071006060591"):
                 ANTIGRAVITY_CLIENT_ID = cid
+                if i < len(secrets):
+                    ANTIGRAVITY_CLIENT_SECRET = secrets[i]
                 break
         if not ANTIGRAVITY_CLIENT_ID:
             ANTIGRAVITY_CLIENT_ID = ids[0]
-        ANTIGRAVITY_CLIENT_SECRET = secrets[0]
+            ANTIGRAVITY_CLIENT_SECRET = secrets[0]
 
 def _get_client_id():
     _extract_from_agy_binary()
@@ -255,10 +258,47 @@ def clear_credentials() -> None:
         google_oauth.clear_credentials()
 
 
+def _refresh_token_via_agy_cli() -> bool:
+    """Use agy CLI to refresh the OAuth token using its own credential management.
+
+    The client_secret extracted from the agy binary may not match the one
+    Google expects for token refresh (binary can be stale or secrets rotated).
+    agy manages its own secrets internally, so running ``agy --print "OK"``
+    forces agy to refresh the token with its correct credentials, which we
+    then re-read from the token file.
+
+    Returns True if the agy CLI ran successfully.
+    """
+    import subprocess
+    try:
+        subprocess.run(
+            ["agy", "--print", "OK", "--print-timeout", "30s"],
+            capture_output=True, text=True, timeout=60,
+        )
+        return True
+    except Exception:
+        return False
+
+
 def get_valid_access_token(*, force_refresh: bool = False) -> str:
     with _antigravity_profile():
-        token = google_oauth.get_valid_access_token(force_refresh=force_refresh)
-        creds = google_oauth.load_credentials()
+        try:
+            token = google_oauth.get_valid_access_token(force_refresh=force_refresh)
+            creds = google_oauth.load_credentials()
+        except GoogleOAuthError:
+            # Standard OAuth refresh failed — likely client_secret mismatch
+            # with the secret extracted from the agy binary.  Fall back to
+            # agy CLI which manages its own secrets internally.
+            if not _refresh_token_via_agy_cli():
+                raise
+            # Re-read the token that agy just refreshed
+            creds = _load_cli_credentials()
+            if creds is None:
+                raise
+            # Persist to Hermes credential store so future refreshes
+            # pick up the agy-refreshed token first
+            google_oauth.save_credentials(creds)
+            token = creds.access_token
     if creds is not None:
         _mirror_credentials_to_cli(creds)
     return token
