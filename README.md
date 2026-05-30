@@ -75,19 +75,59 @@ Provider aliases: `google-antigravity`, `antigravity`, `antigravity-oauth`
 
 ## Supported Models
 
-| Model ID | Backend |
-|----------|---------|
-| `gemini-3.5-flash-high` | Gemini 3.5 Flash (High) |
-| `gemini-3.5-flash-low` | Gemini 3.5 Flash (Low) |
-| `gemini-3.1-pro-high` | Gemini 3.1 Pro (High) |
-| `gemini-3.1-pro-low` | Gemini 3.1 Pro (Low) |
-| `claude-sonnet-4-6` | Claude Sonnet 4.6 |
-| `claude-sonnet-4-6-thinking` | Claude Sonnet 4.6 (Thinking) |
-| `claude-opus-4-6` | Claude Opus 4.6 |
-| `claude-opus-4-6-thinking` | Claude Opus 4.6 (Thinking) |
-| `gpt-oss-120b-medium` | GPT-OSS 120B |
+### Gemini Flash
 
-Model IDs are mapped internally to Antigravity's backend IDs and get the appropriate `thinkingConfig.thinkingLevel` injected automatically.
+| Model ID | Tier | Backend ID |
+|----------|------|------------|
+| `gemini-3.5-flash-high` | High (best) | `gemini-3-flash-agent` |
+| `gemini-3.5-flash` | High | `gemini-3-flash-agent` |
+| `gemini-3.5-flash-medium` | Medium | `gemini-3-flash` |
+| `gemini-3.5-flash-low` | Low (fastest) | `gemini-3-flash` |
+| `gemini-3-flash-high` | High | `gemini-3-flash` |
+| `gemini-3-flash-medium` | Medium | `gemini-3-flash` |
+| `gemini-3-flash-low` | Low | `gemini-3-flash` |
+
+### Gemini Pro
+
+| Model ID | Tier | Backend ID |
+|----------|------|------------|
+| `gemini-3.1-pro-high` | High (best) | `gemini-3.1-pro-low` |
+| `gemini-3.1-pro-medium` | Medium | `gemini-3.1-pro-low` |
+| `gemini-3.1-pro` | Default | `gemini-3.1-pro-low` |
+
+### Claude (via Antigravity)
+
+| Model ID | Thinking | Backend ID |
+|----------|----------|------------|
+| `claude-sonnet-4-6` | Off | `claude-sonnet-4-6` |
+| `claude-sonnet-4-6-thinking` | On :thought_balloon: | `claude-sonnet-4-6` |
+| `claude-opus-4-6` | Off | `claude-opus-4-6-thinking` |
+| `claude-opus-4-6-thinking` | On :thought_balloon: | `claude-opus-4-6-thinking` |
+
+### GPT (via Antigravity)
+
+| Model ID | Backend ID |
+|----------|------------|
+| `gpt-oss-120b` | `gpt-oss-120b-medium` |
+| `gpt-oss-120b-medium` | `gpt-oss-120b-medium` |
+
+### Provider-prefixed aliases
+
+Standard provider prefixes are accepted and mapped automatically:
+
+| Aliased Model ID | Resolves to |
+|------------------|-------------|
+| `google/gemini-3.1-pro-high` | `gemini-3.1-pro-high` |
+| `anthropic/claude-sonnet-4-6-thinking` | `claude-sonnet-4-6-thinking` |
+| `openai/gpt-oss-120b` | `gpt-oss-120b` |
+
+Provider aliases: `google-antigravity`, `antigravity`, `antigravity-oauth`
+
+## How tier/thinking works
+
+Gemini Flash/Pro use `thinkingConfig.thinkingLevel` (high/medium/low) injected into the request body. The model ID sent to the backend is the canonical internal ID — tiers are controlled purely by the thinking level parameter.
+
+Claude thinking is controlled by `include_thoughts: true` in the request. Adding `-thinking` to the model name triggers interleaved thinking mode automatically.
 
 ## What gets installed
 
