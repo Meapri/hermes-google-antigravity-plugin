@@ -11,9 +11,11 @@ To use: install via sitecustomize.py or import directly:
 """
 from __future__ import annotations
 
+__version__ = "2.0.0"
+
 import inspect
-import sys
 import logging
+import sys
 
 logger = logging.getLogger(__name__)
 

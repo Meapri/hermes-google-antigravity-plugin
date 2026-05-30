@@ -218,6 +218,9 @@ rm -f ~/.hermes/hermes-agent/agent/google_antigravity_*.py
 rm -f ~/.hermes/hermes-agent/agent/antigravity_*.py
 rm -f ~/.hermes/auth/google_antigravity.json*
 
+# Remove auto-recovery hook
+rm -f ~/.hermes/hermes-agent/.git/hooks/post-merge
+
 # Remove credential from pool
 hermes auth remove google-antigravity 1
 
