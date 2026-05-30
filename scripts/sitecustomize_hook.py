@@ -58,7 +58,13 @@ def _make_import_hook(target_module, patcher_fn, label):
                 original_exec(module)
                 finder._patched = True
                 try:
-                    patcher_fn(module)
+                    result = patcher_fn(module)
+                    # patcher_fn may return bool for antigravity patches
+                    if isinstance(result, bool) and not result:
+                        sys.stderr.write(
+                            f"[{label}] patch declined "
+                            f"(API incompatibility detected)\n"
+                        )
                 except Exception as exc:
                     import traceback
                     sys.stderr.write(
@@ -74,16 +80,43 @@ def _make_import_hook(target_module, patcher_fn, label):
 
 def _claude_patcher(module):
     import anthropic_billing_bypass
-    anthropic_billing_bypass.apply_patches(module)
+    ok = anthropic_billing_bypass.apply_patches(module)
+    if not ok:
+        sys.stderr.write(
+            "[hermes-claude-auth] bypass declined "
+            "(API incompatibility detected)\n"
+        )
 
 
-def _antigravity_patcher(_module):
+def _antigravity_providers_patcher(_module):
+    """Full antigravity provider patch (fires on hermes_cli.providers import)."""
     import antigravity_provider_patch
     antigravity_provider_patch.apply()
 
 
+def _antigravity_main_patcher(_module):
+    """Model picker patches (fires on hermes_cli.main import, before cmd_model).
+
+    This must fire BEFORE select_provider_and_model is called, so the
+    TUI provider list includes google-antigravity from the first run.
+    """
+    import antigravity_provider_patch
+    ok1 = antigravity_provider_patch._patch_models_module()
+    ok2 = antigravity_provider_patch._patch_model_picker()
+    if not (ok1 and ok2):
+        sys.stderr.write(
+            "[hermes-antigravity-main] TUI picker patches skipped "
+            "(API incompatibility — will still work via hermes config)\n"
+        )
+
+
 try:
     _make_import_hook("agent.anthropic_adapter", _claude_patcher, "hermes-claude-auth")
-    _make_import_hook("hermes_cli.providers", _antigravity_patcher, "hermes-antigravity")
+    _make_import_hook(
+        "hermes_cli.providers", _antigravity_providers_patcher, "hermes-antigravity"
+    )
+    _make_import_hook(
+        "hermes_cli.main", _antigravity_main_patcher, "hermes-antigravity-main"
+    )
 except Exception as _exc:
     sys.stderr.write(f"[hermes-sitecustomize] hook install failed: {_exc}\n")

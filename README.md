@@ -73,6 +73,57 @@ hermes config set model.default gemini-3.5-flash-high
 
 Provider aliases: `google-antigravity`, `antigravity`, `antigravity-oauth`
 
+### TUI Model Picker (`hermes model`)
+
+As of v1.1, google-antigravity appears in the `hermes model` interactive provider list.
+Select it from the menu and pick a model — no manual config editing needed.
+
+If the TUI integration breaks after a Hermes update, the provider still works
+via `hermes config set`. See [After Hermes Update](#after-hermes-update) below.
+
+## After Hermes Update
+
+When you run `hermes update` (which does `git pull` + `pip install`), the
+`sitecustomize.py` inside the venv may be overwritten. Everything else survives.
+
+**Check what's broken:**
+```bash
+cd hermes-google-antigravity-plugin
+./scripts/install.sh --check
+```
+
+**Recover (only restores what's needed):**
+```bash
+cd hermes-google-antigravity-plugin
+git pull && ./scripts/install.sh --post-update
+```
+
+**Full recovery (if anything went badly wrong):**
+```bash
+cd hermes-google-antigravity-plugin
+git pull && ./scripts/install.sh
+```
+
+### What survives `hermes update`
+
+| File | Location | Survives? |
+|------|----------|:---:|
+| `antigravity_provider_patch.py` | `~/.hermes/patches/` | ✅ Outside repo |
+| `google_antigravity_*.py` | `hermes-agent/agent/` | ✅ Untracked files |
+| Plugin metadata | `~/.hermes/plugins/` | ✅ Outside repo |
+| **`sitecustomize.py`** | venv `site-packages/` | ❌ Overwritten |
+| Auth token | `~/.gemini/...` | ✅ Managed by agy |
+
+Only `sitecustomize.py` needs recovery. `--post-update` does exactly that.
+
+### Patch safety (for developers)
+
+Every monkey-patch function verifies Hermes API compatibility via
+`inspect.signature` before applying and returns `False` on mismatch
+instead of crashing. If Hermes internals change, the affected patch
+declines gracefully and the rest keep working. `apply()` reports
+results like `6/6 patches applied` or `5/6 (failed: model_picker)`.
+
 ## Supported Models
 
 ### Gemini Flash
@@ -176,13 +227,17 @@ systemctl --user restart hermes-gateway
 
 ## Troubleshooting
 
-**"Unknown provider: google-antigravity"** — the `sitecustomize.py` hook didn't load. Restart the gateway: `systemctl --user restart hermes-gateway`
+**"Unknown provider: google-antigravity"** — the `sitecustomize.py` hook didn't load. Restart the gateway: `systemctl --user restart hermes-gateway`. If that doesn't help, run `./scripts/install.sh --post-update`.
+
+**google-antigravity not in `hermes model` list** — the TUI picker patch may have been declined due to Hermes API changes. Run `hermes config set model.provider google-antigravity` as a workaround.
 
 **Token refresh fails** — make sure `agy` is on PATH and logged in. Run `agy --print "OK"` manually to verify.
 
 **"invalid_client" on fresh login** — the OAuth client credentials extracted from your `agy` binary may be outdated. Update `agy` to the latest version and reinstall the plugin.
 
 **Reinstall** — just run `./scripts/install.sh` again. It overwrites all installed files and restarts the gateway.
+
+**After `hermes update`** — run `./scripts/install.sh --check` to see what's broken, then `./scripts/install.sh --post-update` to fix it.
 
 ## Compatibility
 
