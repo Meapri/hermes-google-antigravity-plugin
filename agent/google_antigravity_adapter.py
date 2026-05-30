@@ -8,9 +8,11 @@ envelope details that differ in Antigravity.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import re
+import shlex
 import threading
 import time
 import uuid
@@ -123,6 +125,11 @@ GEMINI_31_PRO_MIN_OUTPUT_TOKENS = 256
 ANTIGRAVITY_REASONING_MIN_OUTPUT_TOKENS = 256
 ANTIGRAVITY_SYSTEM_INSTRUCTION = (
     "Use absolute file paths for filesystem tool arguments."
+)
+GPT_OSS_TOOL_PROTOCOL_HINT = (
+    "Use the provided function-calling protocol for tools. Do not emit Harmony "
+    "channel tokens such as <|start|>, <|channel|>, <|message|>, or <|call|> "
+    "as user-visible text. After receiving tool results, answer in plain text."
 )
 
 def _stable_antigravity_session_id(session_id: Any) -> str:
@@ -397,6 +404,82 @@ def _is_gpt_oss_model(model: str) -> bool:
     return "gpt-oss" in str(model or "").lower()
 
 
+_GPT_OSS_HARMONY_TOOL_CALL_RE = re.compile(
+    r"<\|start\|>assistant<\|channel\|>commentary"
+    r"(?:\s+to=[^<\s]+)?\s+code<\|message\|>"
+    r"(?P<payload>.*?)<\|call\|>",
+    re.DOTALL,
+)
+
+
+def _payload_to_visible_tool_result(payload: str) -> str:
+    """Best-effort visible text for leaked GPT-OSS Harmony tool markup.
+
+    Some GPT-OSS responses behind Antigravity may emit a Harmony-style tool
+    call as plain text after Hermes has already executed a proper function
+    call.  Never show that protocol markup to the user.  For the common
+    harmless smoke-test shape ``bash -lc 'printf VALUE'``, recover VALUE;
+    otherwise drop the leaked markup.
+    """
+    try:
+        data = json.loads(payload)
+    except (TypeError, ValueError):
+        return ""
+    cmd = data.get("cmd") if isinstance(data, dict) else None
+    if isinstance(cmd, list) and len(cmd) >= 3 and cmd[0] == "bash" and cmd[1] == "-lc":
+        shell_cmd = str(cmd[2] or "")
+    elif isinstance(cmd, str):
+        shell_cmd = cmd
+    else:
+        return ""
+    try:
+        parts = shlex.split(shell_cmd)
+    except ValueError:
+        return ""
+    if parts and parts[0] == "printf" and len(parts) >= 2:
+        return " ".join(parts[1:])
+    return ""
+
+
+def _sanitize_gpt_oss_visible_text(text: Any) -> Any:
+    if not isinstance(text, str) or "<|start|>assistant<|channel|>commentary" not in text:
+        return text
+
+    def repl(match: re.Match[str]) -> str:
+        return _payload_to_visible_tool_result(match.group("payload"))
+
+    cleaned = _GPT_OSS_HARMONY_TOOL_CALL_RE.sub(repl, text)
+    return cleaned.strip()
+
+
+def _sanitize_gpt_oss_response(response: Any, model: str) -> Any:
+    if not _is_gpt_oss_model(model):
+        return response
+    try:
+        choices = getattr(response, "choices", None) or []
+        for choice in choices:
+            message = getattr(choice, "message", None)
+            if message is not None:
+                message.content = _sanitize_gpt_oss_visible_text(getattr(message, "content", None))
+            delta = getattr(choice, "delta", None)
+            if delta is not None:
+                delta.content = _sanitize_gpt_oss_visible_text(getattr(delta, "content", None))
+    except Exception:
+        logger.debug("Failed to sanitize GPT-OSS Harmony markup", exc_info=True)
+    return response
+
+
+def _translate_antigravity_stream_event(
+    event: Dict[str, Any],
+    model: str,
+    tool_call_counter: List[int],
+) -> List[_GeminiStreamChunk]:
+    return [
+        _sanitize_gpt_oss_response(chunk, model)
+        for chunk in _translate_stream_event(event, model, tool_call_counter)
+    ]
+
+
 def _strip_gpt_oss_schema_constraints(value: Any) -> Any:
     """Remove Gemini Schema numeric constraints that PA re-serializes as strings.
 
@@ -494,6 +577,8 @@ def _apply_antigravity_request_transforms(request: Dict[str, Any], *, model: str
         _normalize_claude_tools(request)
     elif _is_gpt_oss_model(model):
         _normalize_gpt_oss_tools(request)
+        if isinstance(request.get("tools"), list) and request["tools"]:
+            _append_system_text(request, GPT_OSS_TOOL_PROTOCOL_HINT)
     _append_system_text(request, ANTIGRAVITY_SYSTEM_INSTRUCTION, prepend=True, role="user")
     inject_context_compression(request, model=model)
     request["sessionId"] = str(request.get("sessionId") or f"-{uuid.uuid4()}")
@@ -1094,7 +1179,10 @@ class GoogleAntigravityClient(GeminiCloudCodeClient):
                                     f"Invalid JSON from Antigravity Code Assist: {exc}",
                                     code="antigravity_invalid_json",
                                 ) from exc
-                            return _translate_gemini_response(payload, model=model)
+                            return _sanitize_gpt_oss_response(
+                                _translate_gemini_response(payload, model=model),
+                                model,
+                            )
                         last_error = _gemini_http_error(response)
                         if (
                             _is_short_antigravity_capacity_error(last_error)
@@ -1179,7 +1267,7 @@ class GoogleAntigravityClient(GeminiCloudCodeClient):
                                                 if retry_response.status_code == 200:
                                                     tool_call_counter = [0]
                                                     for event in _iter_sse_events(retry_response):
-                                                        for chunk in _translate_stream_event(event, model, tool_call_counter):
+                                                        for chunk in _translate_antigravity_stream_event(event, model, tool_call_counter):
                                                             yield chunk
                                                     return
                                                 retry_response.read()
@@ -1201,7 +1289,7 @@ class GoogleAntigravityClient(GeminiCloudCodeClient):
                                                             if ultra_retry_response.status_code == 200:
                                                                 tool_call_counter = [0]
                                                                 for event in _iter_sse_events(ultra_retry_response):
-                                                                    for chunk in _translate_stream_event(event, model, tool_call_counter):
+                                                                    for chunk in _translate_antigravity_stream_event(event, model, tool_call_counter):
                                                                         yield chunk
                                                                 return
                                                             ultra_retry_response.read()
@@ -1228,7 +1316,7 @@ class GoogleAntigravityClient(GeminiCloudCodeClient):
                                     break
                                 tool_call_counter: List[int] = [0]
                                 for event in _iter_sse_events(response):
-                                    for chunk in _translate_stream_event(event, model, tool_call_counter):
+                                    for chunk in _translate_antigravity_stream_event(event, model, tool_call_counter):
                                         yield chunk
                                 return
                         except httpx.HTTPError as exc:

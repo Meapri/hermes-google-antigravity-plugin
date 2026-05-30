@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from agent import google_antigravity_adapter as ag
 
 
@@ -57,6 +59,38 @@ def test_google_one_ai_credits_are_explicitly_opted_into():
     )
 
     assert wrapped["enabledCreditTypes"] == ["GOOGLE_ONE_AI"]
+
+
+def test_gpt_oss_transform_adds_harmony_protocol_hint_for_tools():
+    request = {
+        "contents": [{"role": "user", "parts": [{"text": "use tool"}]}],
+        "tools": [{"functionDeclarations": [{"name": "terminal", "parameters": {"type": "object"}}]}],
+    }
+
+    getattr(ag, "_apply_antigravity_request_transforms")(
+        request,
+        model="gpt-oss-120b",
+    )
+
+    system_text = request["systemInstruction"]["parts"][0]["text"]
+    assert "Do not emit Harmony" in system_text
+    assert "After receiving tool results, answer in plain text" in system_text
+
+
+def test_gpt_oss_harmony_tool_markup_is_sanitized_to_visible_printf_output():
+    text = '<|start|>assistant<|channel|>commentary to=terminal code<|message|>{"cmd":["bash","-lc","printf FULL_TOOL_GPT_TERMINAL"]}<|call|>'
+
+    assert getattr(ag, "_sanitize_gpt_oss_visible_text")(text) == "FULL_TOOL_GPT_TERMINAL"
+
+
+def test_gpt_oss_response_sanitizer_does_not_affect_gemini_models():
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="<|start|>assistant<|channel|>commentary code<|message|>{}<|call|>"))]
+    )
+
+    result = getattr(ag, "_sanitize_gpt_oss_response")(response, "gemini-3.5-flash-high")
+
+    assert result.choices[0].message.content.startswith("<|start|>assistant")
 
 
 def test_google_one_ai_credit_mode_defaults_to_plan_detection(monkeypatch):

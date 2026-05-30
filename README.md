@@ -206,7 +206,7 @@ Claude thinking is controlled by `include_thoughts: true` in the request. Adding
 | `~/.hermes/hermes-agent/agent/antigravity_quota_grpc.py` | Quota probing via gRPC |
 | `~/.hermes/hermes-agent/agent/antigravity_stream_grpc.py` | Optional context compression |
 | `~/.hermes/patches/antigravity_provider_patch.py` | Runtime monkey-patch — injects provider into Hermes |
-| `<venv>/site-packages/sitecustomize.py` | Import hook — auto-loads on Python startup (4 hooks: claude + 3 antigravity) |
+| `<venv>/site-packages/sitecustomize.py` | Import hook — auto-loads on Python startup (5 hooks: claude + 4 antigravity) |
 | `~/.hermes/hermes-agent/.git/hooks/post-merge` | Auto-recovery hook — restores sitecustomize.py after `hermes update` |
 
 **No Hermes source files are modified.** All provider registration happens through the `sitecustomize.py` MetaPathFinder hook. This is the same pattern used by `hermes-claude-auth`.

@@ -567,6 +567,7 @@ def _patch_auxiliary_client() -> bool:
 
     class AsyncGoogleAntigravityClientProxy:
         def __init__(self, sync_client):
+            self._sync_client = sync_client
             self.chat = AsyncChatProxy(sync_client)
             self.api_key = sync_client.api_key
             self.base_url = sync_client.base_url

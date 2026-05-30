@@ -88,6 +88,18 @@ def _claude_patcher(module):
         )
 
 
+def _claude_error_classifier_patcher(_module):
+    """Install Claude thinking-replay error recovery as early as possible.
+
+    ``agent.conversation_loop`` imports ``classify_api_error`` directly from
+    ``agent.error_classifier``. If the classifier is imported before
+    ``agent.anthropic_adapter``, the regular Claude adapter hook can be too late
+    for that bound name. Patch the classifier module the moment it loads.
+    """
+    import anthropic_billing_bypass
+    anthropic_billing_bypass._install_thinking_replay_classifier_patch()
+
+
 def _antigravity_providers_patcher(_module):
     """Full antigravity provider patch (fires on hermes_cli.providers import)."""
     import antigravity_provider_patch
@@ -119,6 +131,14 @@ def _antigravity_auth_early_patcher(_module):
     antigravity_provider_patch._patch_auxiliary_client()
 
 
+def _antigravity_auxiliary_patcher(_module):
+    """Patch auxiliary_client even when it imports before hermes_cli.auth."""
+    import antigravity_provider_patch
+    antigravity_provider_patch._patch_auth_registry()
+    antigravity_provider_patch._patch_providers()
+    antigravity_provider_patch._patch_auxiliary_client()
+
+
 def _antigravity_main_patcher(_module):
     """Model picker patches (fires on hermes_cli.main import, before cmd_model).
 
@@ -136,12 +156,16 @@ def _antigravity_main_patcher(_module):
 
 
 try:
+    _make_import_hook("agent.error_classifier", _claude_error_classifier_patcher, "hermes-claude-auth-errors")
     _make_import_hook("agent.anthropic_adapter", _claude_patcher, "hermes-claude-auth")
     _make_import_hook(
         "hermes_cli.auth", _antigravity_auth_early_patcher, "hermes-antigravity-auth"
     )
     _make_import_hook(
         "hermes_cli.providers", _antigravity_providers_patcher, "hermes-antigravity"
+    )
+    _make_import_hook(
+        "agent.auxiliary_client", _antigravity_auxiliary_patcher, "hermes-antigravity-auxiliary"
     )
     _make_import_hook(
         "hermes_cli.main", _antigravity_main_patcher, "hermes-antigravity-main"
