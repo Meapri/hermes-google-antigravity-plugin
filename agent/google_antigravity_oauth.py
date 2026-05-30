@@ -29,14 +29,55 @@ from utils import atomic_replace
 PROVIDER_ID = "google-antigravity"
 MARKER_BASE_URL = "cloudcode-pa://antigravity"
 
-# Public OAuth client credentials are intentionally not committed in this
-# standalone repo because GitHub push protection treats Google OAuth client
-# identifiers/secrets as secrets. Provide them via environment variables:
-#
+# OAuth client credentials are extracted from the agy CLI binary at runtime
+# (same approach as hermes-claude-auth — no secrets committed to git).
+# Override via environment variables if needed:
 #   HERMES_ANTIGRAVITY_CLIENT_ID
 #   HERMES_ANTIGRAVITY_CLIENT_SECRET
 ANTIGRAVITY_CLIENT_ID = ""
-ANTIGRAVITY_CLIENT_SECRET = ""
+ANTIGRAVITY_CLIENT_SECRET=""
+
+def _extract_from_agy_binary():
+    """Extract OAuth client credentials from the agy CLI binary at runtime."""
+    global ANTIGRAVITY_CLIENT_ID, ANTIGRAVITY_CLIENT_SECRET
+    if ANTIGRAVITY_CLIENT_ID and ANTIGRAVITY_CLIENT_SECRET:
+        return
+    import subprocess, re
+    try:
+        agy_path = subprocess.check_output(["which", "agy"], text=True, timeout=5).strip()
+    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
+        return
+    try:
+        data = subprocess.check_output(["strings", agy_path], timeout=30)
+        text = data.decode(errors='replace')
+    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
+        return
+    ids = re.findall(r'(\d+-[\w]+\.apps\.googleusercontent\.com)', text)
+    secrets = re.findall(r'(GOCSPX-[\w]+)', text)
+    if ids and secrets:
+        # Prefer the consumer client (884354919052-...) over the NoeFabris one
+        for cid in ids:
+            if cid.startswith("884354919052"):
+                ANTIGRAVITY_CLIENT_ID = cid
+                break
+        if not ANTIGRAVITY_CLIENT_ID:
+            ANTIGRAVITY_CLIENT_ID = ids[0]
+        ANTIGRAVITY_CLIENT_SECRET = secrets[0]
+
+def _get_client_id():
+    _extract_from_agy_binary()
+    if not ANTIGRAVITY_CLIENT_ID:
+        import os
+        return os.getenv("HERMES_ANTIGRAVITY_CLIENT_ID", "").strip()
+    return ANTIGRAVITY_CLIENT_ID
+
+
+def _get_client_secret():
+    _extract_from_agy_binary()
+    if not ANTIGRAVITY_CLIENT_SECRET:
+        import os
+        return os.getenv("HERMES_ANTIGRAVITY_CLIENT_SECRET", "").strip()
+    return ANTIGRAVITY_CLIENT_SECRET
 ANTIGRAVITY_SCOPES = (
     "https://www.googleapis.com/auth/cloud-platform "
     "https://www.googleapis.com/auth/userinfo.email "
@@ -93,8 +134,8 @@ def _antigravity_profile() -> Iterator[None]:
         try:
             google_oauth.ENV_CLIENT_ID = "HERMES_ANTIGRAVITY_CLIENT_ID"
             google_oauth.ENV_CLIENT_SECRET = "HERMES_ANTIGRAVITY_CLIENT_SECRET"
-            google_oauth._DEFAULT_CLIENT_ID = ANTIGRAVITY_CLIENT_ID
-            google_oauth._DEFAULT_CLIENT_SECRET = ANTIGRAVITY_CLIENT_SECRET
+            google_oauth._DEFAULT_CLIENT_ID = _get_client_id()
+            google_oauth._DEFAULT_CLIENT_SECRET = _get_client_secret()
             google_oauth.OAUTH_SCOPES = ANTIGRAVITY_SCOPES
             google_oauth.DEFAULT_REDIRECT_PORT = ANTIGRAVITY_REDIRECT_PORT
             google_oauth.REDIRECT_HOST = "localhost"
@@ -142,14 +183,17 @@ def _load_cli_credentials() -> Optional[GoogleCredentials]:
         return None
     if not isinstance(data, dict):
         return None
-    access = str(data.get("access_token", "") or "")
-    refresh = str(data.get("refresh_token", "") or "")
+    # Support both agy CLI's nested format: {"token": {"access_token": ..., "refresh_token": ..., "expiry": ...}}
+    # and the flat format: {"access_token": ..., "refresh_token": ..., "expiry": ...}
+    token_data = data.get("token") if "token" in data and isinstance(data.get("token"), dict) else data
+    access = str(token_data.get("access_token", "") or "")
+    refresh = str(token_data.get("refresh_token", "") or "")
     if not access or not refresh:
         return None
     return GoogleCredentials(
         access_token=access,
         refresh_token=refresh,
-        expires_ms=_parse_cli_expiry_ms(data.get("expiry")),
+        expires_ms=_parse_cli_expiry_ms(token_data.get("expiry")),
         email="",
     )
 
@@ -159,12 +203,16 @@ def _mirror_credentials_to_cli(creds: GoogleCredentials) -> None:
         return
     path = _cli_credentials_path()
     path.parent.mkdir(parents=True, exist_ok=True)
+    # Write in agy CLI's nested format: {"token": {...}, "auth_method": "consumer"}
     payload = json.dumps(
         {
-            "access_token": creds.access_token,
-            "refresh_token": creds.refresh_token,
-            "token_type": "Bearer",
-            "expiry": _format_cli_expiry(creds.expires_ms),
+            "token": {
+                "access_token": creds.access_token,
+                "refresh_token": creds.refresh_token,
+                "token_type": "Bearer",
+                "expiry": _format_cli_expiry(creds.expires_ms),
+            },
+            "auth_method": "consumer",
         },
         indent=2,
         sort_keys=True,
