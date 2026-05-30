@@ -644,6 +644,6 @@ def apply() -> dict[str, bool]:
     )
     if failed:
         status += f" (failed: {', '.join(failed)})"
-    print(status, file=sys.stderr, flush=True)
+    logger.debug(status)
 
     return _patch_results
