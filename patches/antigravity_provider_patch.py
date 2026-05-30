@@ -550,6 +550,30 @@ def _patch_auxiliary_client() -> bool:
         logger.warning("[antigravity_patch] resolve_provider_client missing")
         return False
 
+    # Async proxy classes for GoogleAntigravityClient to handle async_mode
+    # safely without unsupported protocol errors (e.g. cloudcode-pa://).
+    import asyncio
+
+    class AsyncCompletionsProxy:
+        def __init__(self, sync_client):
+            self._sync_client = sync_client
+
+        async def create(self, **kwargs):
+            return await asyncio.to_thread(self._sync_client.chat.completions.create, **kwargs)
+
+    class AsyncChatProxy:
+        def __init__(self, sync_client):
+            self.completions = AsyncCompletionsProxy(sync_client)
+
+    class AsyncGoogleAntigravityClientProxy:
+        def __init__(self, sync_client):
+            self.chat = AsyncChatProxy(sync_client)
+            self.api_key = sync_client.api_key
+            self.base_url = sync_client.base_url
+
+        async def close(self):
+            await asyncio.to_thread(self._sync_client.close)
+
     def patched_resolve(provider, model=None, async_mode=False, **kwargs):
         provider_normalized = (provider or "").strip().lower()
         if provider_normalized == "google-antigravity":
@@ -565,8 +589,8 @@ def _patch_auxiliary_client() -> bool:
                 )
                 final_model = model or "gemini-3.5-flash-high"
                 if async_mode:
-                    from agent.auxiliary_client import _to_async_client
-                    return _to_async_client(client, final_model), final_model
+                    async_client = AsyncGoogleAntigravityClientProxy(client)
+                    return async_client, final_model
                 return client, final_model
             except Exception as exc:
                 logger.warning("[antigravity_patch] resolve_provider_client failed for google-antigravity: %s", exc)
