@@ -896,9 +896,9 @@ def _is_endpoint_service_disabled(response: httpx.Response) -> bool:
 
 
 def get_antigravity_headers(*, refresh_version: bool = False) -> Dict[str, str]:
-    # Antigravity content requests intentionally avoid the Gemini CLI
-    # X-Goog-Api-Client/Client-Metadata header set. Identity metadata is carried
-    # in the wrapped request body instead.
+    # Antigravity content requests carry their own X-Goog-Api-Client to
+    # identify as the Antigravity CLI (not Hermes, not Gemini CLI).
+    # Identity metadata is carried in the wrapped request body as well.
     version = resolve_antigravity_version(refresh=refresh_version)
     return {
         "User-Agent": (
@@ -907,6 +907,8 @@ def get_antigravity_headers(*, refresh_version: bool = False) -> Dict[str, str]:
             f"Antigravity/{version} Chrome/138.0.7204.235 "
             "Electron/37.3.1 Safari/537.36"
         ),
+        "X-Goog-Api-Client": f"antigravity-cli/{version}",
+        "x-activity-request-id": str(uuid.uuid4()),
     }
 
 
@@ -1032,7 +1034,6 @@ class GoogleAntigravityClient(GeminiCloudCodeClient):
             "Content-Type": "application/json",
             "Accept": "application/json",
             "Authorization": f"Bearer {access_token}",
-            "x-activity-request-id": str(uuid.uuid4()),
             **get_antigravity_headers(refresh_version=True),
         }
         # Do not set x-goog-user-project for Antigravity: the upstream plugin
