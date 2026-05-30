@@ -285,17 +285,25 @@ def _patch_agent_runtime() -> bool:
     # ── Check new API first (Hermes >= 0.11): google-antigravity is built in ──
     new_client_fn = getattr(arh, "create_openai_client", None)
     if callable(new_client_fn):
-        # Verify it already handles google-antigravity by inspecting source
-        try:
-            src = inspect.getsource(new_client_fn)
-            if "google-antigravity" in src:
+        original_create = new_client_fn
+        def patched_create(agent, client_kwargs, reason, shared):
+            if agent.provider == "google-antigravity" or str(client_kwargs.get("base_url", "")).startswith("cloudcode-pa://antigravity"):
+                from agent.google_antigravity_adapter import GoogleAntigravityClient
+                safe_kwargs = {
+                    k: v for k, v in client_kwargs.items()
+                    if k in {"api_key", "base_url", "default_headers", "project_id", "timeout"}
+                }
+                client = GoogleAntigravityClient(**safe_kwargs)
                 logger.info(
-                    "[antigravity_patch] agent_runtime: already handled "
-                    "natively (create_openai_client)"
+                    "Google Antigravity client created (%s, shared=%s)",
+                    reason,
+                    shared,
                 )
-                return True
-        except (OSError, TypeError):
-            pass  # can't inspect; assume it's handled
+                return client
+            return original_create(agent, client_kwargs, reason=reason, shared=shared)
+        arh.create_openai_client = patched_create
+        logger.info("[antigravity_patch] agent_runtime: patched create_openai_client")
+        return True
 
     # ── Fall back to old API (_create_new_client) ─────────────────────
     old_client_fn = getattr(arh, "_create_new_client", None)
@@ -312,7 +320,7 @@ def _patch_agent_runtime() -> bool:
         )
         return False
 
-    def patched_create(agent, client_kwargs, reason, shared):
+    def patched_create_old(agent, client_kwargs, reason, shared):
         if agent.provider == "google-antigravity":
             from agent.google_antigravity_adapter import GoogleAntigravityClient
             safe = {k: v for k, v in client_kwargs.items()
@@ -326,7 +334,7 @@ def _patch_agent_runtime() -> bool:
             return client
         return old_client_fn(agent, client_kwargs, reason, shared)
 
-    arh._create_new_client = patched_create
+    arh._create_new_client = patched_create_old
     logger.info("[antigravity_patch] injected client routing (legacy API)")
     return True
 
@@ -526,6 +534,50 @@ def _patch_model_picker() -> bool:
     return True
 
 
+def _patch_auxiliary_client() -> bool:
+    """Inject google-antigravity support into resolve_provider_client.
+
+    Returns False if the auxiliary client module is unavailable or incompatible.
+    """
+    try:
+        import agent.auxiliary_client as ac
+    except ImportError:
+        logger.warning("[antigravity_patch] auxiliary_client module unavailable")
+        return False
+
+    original_resolve = getattr(ac, "resolve_provider_client", None)
+    if not callable(original_resolve):
+        logger.warning("[antigravity_patch] resolve_provider_client missing")
+        return False
+
+    def patched_resolve(provider, model=None, async_mode=False, **kwargs):
+        provider_normalized = (provider or "").strip().lower()
+        if provider_normalized == "google-antigravity":
+            from hermes_cli.auth import resolve_antigravity_oauth_runtime_credentials
+            from agent.google_antigravity_adapter import GoogleAntigravityClient
+            try:
+                creds = resolve_antigravity_oauth_runtime_credentials()
+                client = GoogleAntigravityClient(
+                    api_key=creds.get("api_key", ""),
+                    base_url=creds.get("base_url", ""),
+                    project_id=creds.get("project_id", ""),
+                    timeout=kwargs.get("timeout", 120),
+                )
+                final_model = model or "gemini-3.5-flash-high"
+                if async_mode:
+                    from agent.auxiliary_client import _to_async_client
+                    return _to_async_client(client, final_model), final_model
+                return client, final_model
+            except Exception as exc:
+                logger.warning("[antigravity_patch] resolve_provider_client failed for google-antigravity: %s", exc)
+                return None, None
+        return original_resolve(provider, model=model, async_mode=async_mode, **kwargs)
+
+    ac.resolve_provider_client = patched_resolve
+    logger.info("[antigravity_patch] injected auxiliary_client google-antigravity resolver")
+    return True
+
+
 def apply() -> dict[str, bool]:
     """Apply all antigravity provider patches.
 
@@ -545,6 +597,7 @@ def apply() -> dict[str, bool]:
         ("agent_runtime", _patch_agent_runtime),
         ("models_module", _patch_models_module),
         ("model_picker", _patch_model_picker),
+        ("auxiliary_client", _patch_auxiliary_client),
     ]
 
     for name, fn in patches:
