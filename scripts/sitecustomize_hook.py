@@ -94,7 +94,7 @@ def _antigravity_providers_patcher(_module):
     antigravity_provider_patch.apply()
 
 
-def _antigravity_auth_patcher(_module):
+def _antigravity_auth_early_patcher(_module):
     """Early registry injection (fires on hermes_cli.auth import).
 
     ``hermes_cli.auth.resolve_provider()`` validates providers against
@@ -138,7 +138,7 @@ def _antigravity_main_patcher(_module):
 try:
     _make_import_hook("agent.anthropic_adapter", _claude_patcher, "hermes-claude-auth")
     _make_import_hook(
-        "hermes_cli.auth", _antigravity_auth_patcher, "hermes-antigravity-auth"
+        "hermes_cli.auth", _antigravity_auth_early_patcher, "hermes-antigravity-auth"
     )
     _make_import_hook(
         "hermes_cli.providers", _antigravity_providers_patcher, "hermes-antigravity"
