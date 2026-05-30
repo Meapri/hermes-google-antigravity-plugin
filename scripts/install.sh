@@ -139,7 +139,7 @@ else
     cp "$REPO_ROOT/scripts/sitecustomize_hook.py" "$SITECUSTOMIZE"
 fi
 chmod 644 "$SITECUSTOMIZE"
-printf "${GREEN}[✓] Installed sitecustomize hook (3 import hooks)${RESET}\n"
+printf "${GREEN}[✓] Installed sitecustomize hook (4 import hooks)${RESET}\n"
 
 # ── Step 5: Verify patches ──────────────────────────────────────────
 PATCH_CHECK=$("$VENV_DIR/bin/python" -c "
