@@ -563,8 +563,19 @@ def _patch_auxiliary_client() -> bool:
             await asyncio.to_thread(self._sync_client.close)
 
     def patched_resolve(provider, model=None, async_mode=False, **kwargs):
-        provider_normalized = (provider or "").strip().lower()
-        if provider_normalized == "google-antigravity":
+        raw_provider = (provider or "").strip().lower()
+        provider_normalized = raw_provider
+        normalize_aux_provider = getattr(ac, "_normalize_aux_provider", None)
+        if callable(normalize_aux_provider):
+            try:
+                provider_normalized = normalize_aux_provider(provider)
+            except Exception:
+                provider_normalized = raw_provider
+        if provider_normalized in {
+            "google-antigravity",
+            "antigravity",
+            "antigravity-oauth",
+        }:
             from hermes_cli.auth import resolve_antigravity_oauth_runtime_credentials
             from agent.google_antigravity_adapter import GoogleAntigravityClient
             try:
