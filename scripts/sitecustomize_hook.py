@@ -155,6 +155,26 @@ def _antigravity_main_patcher(_module):
         )
 
 
+def _antigravity_model_switch_patcher(_module):
+    """Gateway /model picker injection (fires on hermes_cli.model_switch import).
+
+    Must fire AFTER the module body finishes so ``list_authenticated_providers``
+    is defined. The providers/main hooks run while model_switch is still
+    mid-import (it does ``from hermes_cli.providers import get_label``), so the
+    picker wrap is deferred to this dedicated hook to avoid a circular-import
+    race. ``_patch_models_module`` is re-run first (idempotent) to guarantee the
+    curated Antigravity model list exists before the row is built.
+    """
+    import antigravity_provider_patch
+    antigravity_provider_patch._patch_models_module()
+    ok = antigravity_provider_patch._patch_model_switch_picker()
+    if isinstance(ok, bool) and not ok:
+        sys.stderr.write(
+            "[hermes-antigravity-model-switch] /model picker injection skipped "
+            "(API incompatibility — provider still usable via hermes config)\n"
+        )
+
+
 try:
     _make_import_hook("agent.error_classifier", _claude_error_classifier_patcher, "hermes-claude-auth-errors")
     _make_import_hook("agent.anthropic_adapter", _claude_patcher, "hermes-claude-auth")
@@ -169,6 +189,10 @@ try:
     )
     _make_import_hook(
         "hermes_cli.main", _antigravity_main_patcher, "hermes-antigravity-main"
+    )
+    _make_import_hook(
+        "hermes_cli.model_switch", _antigravity_model_switch_patcher,
+        "hermes-antigravity-model-switch"
     )
 except Exception as _exc:
     sys.stderr.write(f"[hermes-sitecustomize] hook install failed: {_exc}\n")

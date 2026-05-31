@@ -169,65 +169,52 @@ def _patch_runtime_provider() -> bool:
         logger.warning("[antigravity_patch] runtime_provider module unavailable")
         return False
 
-    # Verify target functions exist with expected parameters
     pool_resolver = getattr(rp, "_resolve_runtime_from_pool_entry", None)
     main_resolver = getattr(rp, "resolve_runtime_provider", None)
 
-    if not callable(pool_resolver):
-        logger.warning(
-            "[antigravity_patch] _resolve_runtime_from_pool_entry missing"
-        )
-        return False
+    # 1. Patch pool entry resolver (only patch if it is available)
+    if pool_resolver and callable(pool_resolver):
+        if _verify_signature(pool_resolver, ["provider", "entry", "requested_provider"]):
+            original_resolve = pool_resolver
+            def patched_resolve(*, provider, entry, requested_provider,
+                                model_cfg=None, pool=None, target_model=None, **kwargs):
+                if provider == "google-antigravity":
+                    from hermes_cli.runtime_provider import _get_model_config
+                    model_cfg = model_cfg or _get_model_config()
+                    base_url = (
+                        getattr(entry, "runtime_base_url", None)
+                        or getattr(entry, "base_url", None)
+                        or ""
+                    ).rstrip("/")
+                    api_key = (
+                        getattr(entry, "runtime_api_key", None)
+                        or getattr(entry, "access_token", "")
+                    )
+                    return {
+                        "provider": "google-antigravity",
+                        "api_mode": "chat_completions",
+                        "base_url": base_url or "cloudcode-pa://antigravity",
+                        "api_key": api_key,
+                        "source": "credential-pool",
+                        "expires_at_ms": getattr(entry, "access_token_expires_at_ms", None),
+                        "requested_provider": requested_provider or "google-antigravity",
+                    }
+                return original_resolve(
+                    provider=provider, entry=entry, requested_provider=requested_provider,
+                    model_cfg=model_cfg, pool=pool, target_model=target_model, **kwargs
+                )
+            rp._resolve_runtime_from_pool_entry = patched_resolve
+            logger.info("[antigravity_patch] patched pool entry resolver")
+    else:
+        logger.info("[antigravity_patch] _resolve_runtime_from_pool_entry missing — skipping optional patch")
+
+    # 2. Patch resolve_runtime_provider to handle google-antigravity
     if not callable(main_resolver):
         logger.warning(
             "[antigravity_patch] resolve_runtime_provider missing"
         )
         return False
 
-    # Verify pool resolver accepts keyword args
-    if not _verify_signature(
-        pool_resolver, ["provider", "entry", "requested_provider"]
-    ):
-        logger.warning(
-            "[antigravity_patch] _resolve_runtime_from_pool_entry signature "
-            "changed — skipping"
-        )
-        return False
-
-    # Patch pool entry resolver
-    original_resolve = pool_resolver
-
-    def patched_resolve(*, provider, entry, requested_provider,
-                        model_cfg=None, pool=None, target_model=None, **kwargs):
-        if provider == "google-antigravity":
-            from hermes_cli.runtime_provider import _get_model_config
-            model_cfg = model_cfg or _get_model_config()
-            base_url = (
-                getattr(entry, "runtime_base_url", None)
-                or getattr(entry, "base_url", None)
-                or ""
-            ).rstrip("/")
-            api_key = (
-                getattr(entry, "runtime_api_key", None)
-                or getattr(entry, "access_token", "")
-            )
-            return {
-                "provider": "google-antigravity",
-                "api_mode": "chat_completions",
-                "base_url": base_url or "cloudcode-pa://antigravity",
-                "api_key": api_key,
-                "source": "credential-pool",
-                "expires_at_ms": getattr(entry, "access_token_expires_at_ms", None),
-                "requested_provider": requested_provider or "google-antigravity",
-            }
-        return original_resolve(
-            provider=provider, entry=entry, requested_provider=requested_provider,
-            model_cfg=model_cfg, pool=pool, target_model=target_model, **kwargs
-        )
-
-    rp._resolve_runtime_from_pool_entry = patched_resolve
-
-    # Patch resolve_runtime_provider to handle google-antigravity
     original_main = main_resolver
 
     def patched_main(*, requested=None, explicit_api_key=None,
@@ -603,6 +590,118 @@ def _patch_auxiliary_client() -> bool:
     return True
 
 
+def _patch_model_switch_picker() -> bool:
+    """Inject google-antigravity into the /model picker provider list.
+
+    Root cause this fixes: ``list_authenticated_providers`` (used by the
+    gateway ``/model`` picker via ``list_picker_providers``) decides whether
+    to surface a provider by probing for credentials. For an
+    ``oauth_external`` provider it checks env-var API keys, the auth store
+    ``providers`` dict, and the credential pool — none of which know about
+    Antigravity's standalone OAuth file. Only ``anthropic`` has a hard-coded
+    external-file fallback. So Antigravity's credentials resolve fine at
+    request time, but the picker never lists it.
+
+    We wrap ``list_authenticated_providers`` so that, when the Antigravity
+    OAuth token resolves successfully and no row is already present, we inject
+    a row using the curated model list registered by ``_patch_models_module``.
+    ``list_picker_providers`` calls this same function by module-global name,
+    so patching here fixes the picker too.
+
+    Returns False only if the model_switch API is genuinely incompatible.
+    """
+    import sys as _sys
+    # Don't force-import model_switch here. When apply() runs on the
+    # hermes_cli.providers hook, model_switch is usually mid-import (it does
+    # ``from hermes_cli.providers import get_label``), so list_authenticated_providers
+    # isn't defined yet AND force-importing would re-enter a partially
+    # initialized module. Defer to the dedicated model_switch import hook,
+    # which fires _patch_model_switch_picker() only after the module body
+    # has fully executed.
+    if "hermes_cli.model_switch" not in _sys.modules:
+        return True  # deferred — handled by the model_switch import hook
+    try:
+        import hermes_cli.model_switch as ms
+    except ImportError:
+        logger.warning("[antigravity_patch] model_switch module unavailable")
+        return False
+
+    original = getattr(ms, "list_authenticated_providers", None)
+    if not callable(original):
+        logger.warning(
+            "[antigravity_patch] list_authenticated_providers missing "
+            "— /model picker injection unavailable"
+        )
+        return False
+
+    if getattr(ms, "_antigravity_picker_injected", False):
+        return True  # already done, not a failure
+
+    def _patched_list_authenticated_providers(*args, **kwargs):
+        results = original(*args, **kwargs)
+        try:
+            if not isinstance(results, list):
+                return results
+            slugs = {str(r.get("slug", "")).lower() for r in results}
+            if "google-antigravity" in slugs:
+                return results
+
+            # Confirm credentials actually resolve before advertising.
+            from hermes_cli.auth import (
+                resolve_antigravity_oauth_runtime_credentials,
+            )
+            creds = resolve_antigravity_oauth_runtime_credentials()
+            if not (creds and creds.get("api_key")):
+                return results
+
+            # Resolve current_provider + max_models from args/kwargs to mark
+            # the row as current and honor the picker's model cap.
+            current_provider = ""
+            if args:
+                current_provider = args[0]
+            current_provider = kwargs.get("current_provider", current_provider)
+            max_models = kwargs.get("max_models", 8)
+            if len(args) >= 5:
+                max_models = args[4]
+
+            try:
+                from hermes_cli.models import _PROVIDER_MODELS
+                model_ids = list(_PROVIDER_MODELS.get("google-antigravity", []))
+            except Exception:
+                model_ids = []
+
+            try:
+                from hermes_cli.providers import get_label
+                name = get_label("google-antigravity") or "Google Antigravity (OAuth)"
+            except Exception:
+                name = "Google Antigravity (OAuth)"
+
+            cur = str(current_provider or "").strip().lower()
+            results.insert(0, {
+                "slug": "google-antigravity",
+                "name": name,
+                "is_current": cur in (
+                    "google-antigravity", "antigravity", "antigravity-oauth",
+                ),
+                "is_user_defined": False,
+                "models": model_ids[:max_models],
+                "total_models": len(model_ids),
+                "source": "hermes",
+            })
+        except Exception as exc:
+            logger.debug(
+                "[antigravity_patch] picker injection skipped: %s", exc
+            )
+        return results
+
+    ms.list_authenticated_providers = _patched_list_authenticated_providers
+    ms._antigravity_picker_injected = True
+    logger.info(
+        "[antigravity_patch] injected list_authenticated_providers picker row"
+    )
+    return True
+
+
 def apply() -> dict[str, bool]:
     """Apply all antigravity provider patches.
 
@@ -622,6 +721,7 @@ def apply() -> dict[str, bool]:
         ("agent_runtime", _patch_agent_runtime),
         ("models_module", _patch_models_module),
         ("model_picker", _patch_model_picker),
+        ("model_switch_picker", _patch_model_switch_picker),
         ("auxiliary_client", _patch_auxiliary_client),
     ]
 
