@@ -22,6 +22,20 @@ logger = logging.getLogger(__name__)
 _patched = False
 _patch_results: dict[str, bool] = {}
 
+ANTIGRAVITY_MODEL_IDS = [
+    "gemini-3.5-flash-high",
+    "gemini-3.5-flash-medium",
+    "gemini-3.5-flash-low",
+    "gemini-3.1-pro-high",
+    "gemini-3.1-pro-medium",
+    "claude-sonnet-4-6",
+    "claude-sonnet-4-6-thinking",
+    "claude-opus-4-6",
+    "claude-opus-4-6-thinking",
+    "gpt-oss-120b",
+    "gpt-oss-120b-medium",
+]
+
 
 def _verify_signature(fn, expected_params: list[str]) -> bool:
     """Return True if *fn* is callable and has all *expected_params*."""
@@ -40,6 +54,7 @@ def _patch_providers() -> bool:
     Returns False if the Hermes providers API is incompatible.
     """
     try:
+        import hermes_cli.providers as providers_mod
         from hermes_cli.providers import HermesOverlay, HERMES_OVERLAYS
     except ImportError:
         logger.warning("[antigravity_patch] providers module unavailable")
@@ -68,6 +83,9 @@ def _patch_providers() -> bool:
             base_url_override="cloudcode-pa://antigravity",
         )
         logger.info("[antigravity_patch] injected into HERMES_OVERLAYS")
+    label_overrides = getattr(providers_mod, "_LABEL_OVERRIDES", None)
+    if isinstance(label_overrides, dict):
+        label_overrides["google-antigravity"] = "Google Antigravity (OAuth)"
     return True
 
 
@@ -351,19 +369,7 @@ def _model_flow_google_antigravity(_config, current_model=""):
         return
 
     # Curated model list (same as plugin supported models)
-    AG_MODELS = [
-        "gemini-3.5-flash-high",
-        "gemini-3.5-flash-medium",
-        "gemini-3.5-flash-low",
-        "gemini-3.1-pro-high",
-        "gemini-3.1-pro-medium",
-        "claude-sonnet-4-6",
-        "claude-sonnet-4-6-thinking",
-        "claude-opus-4-6",
-        "claude-opus-4-6-thinking",
-        "gpt-oss-120b",
-        "gpt-oss-120b-medium",
-    ]
+    AG_MODELS = list(ANTIGRAVITY_MODEL_IDS)
 
     default = current_model or (AG_MODELS[0] if AG_MODELS else "gemini-3.5-flash-high")
     selected = _prompt_model_selection(AG_MODELS, current_model=default)
@@ -427,24 +433,12 @@ def _patch_models_module() -> bool:
             "Google Antigravity (Gemini/Claude/GPT via agy CLI OAuth — "
             "no API key needed)",
         ))
-        labels[_slug] = "Google Antigravity (OAuth)"
         logger.info("[antigravity_patch] injected into CANONICAL_PROVIDERS")
+    labels[_slug] = "Google Antigravity (OAuth)"
 
     # Add curated model list
-    if _slug not in provider_models:
-        provider_models[_slug] = [
-            "gemini-3.5-flash-high",
-            "gemini-3.5-flash-medium",
-            "gemini-3.5-flash-low",
-            "gemini-3.1-pro-high",
-            "gemini-3.1-pro-medium",
-            "claude-sonnet-4-6",
-            "claude-sonnet-4-6-thinking",
-            "claude-opus-4-6",
-            "claude-opus-4-6-thinking",
-            "gpt-oss-120b",
-            "gpt-oss-120b-medium",
-        ]
+    if not provider_models.get(_slug):
+        provider_models[_slug] = list(ANTIGRAVITY_MODEL_IDS)
         logger.info("[antigravity_patch] injected model list")
     return True
 
@@ -677,9 +671,12 @@ def _patch_model_switch_picker() -> bool:
 
             try:
                 from hermes_cli.models import _PROVIDER_MODELS
-                model_ids = list(_PROVIDER_MODELS.get("google-antigravity", []))
+                model_ids = list(
+                    _PROVIDER_MODELS.get("google-antigravity", [])
+                    or ANTIGRAVITY_MODEL_IDS
+                )
             except Exception:
-                model_ids = []
+                model_ids = list(ANTIGRAVITY_MODEL_IDS)
 
             try:
                 from hermes_cli.providers import get_label
@@ -713,6 +710,98 @@ def _patch_model_switch_picker() -> bool:
     return True
 
 
+def _antigravity_model_entries() -> list[dict[str, str]]:
+    def _label(mid: str) -> str:
+        replacements = {
+            "gpt": "GPT",
+            "oss": "OSS",
+            "claude": "Claude",
+            "sonnet": "Sonnet",
+            "opus": "Opus",
+            "thinking": "Thinking",
+            "gemini": "Gemini",
+            "flash": "Flash",
+            "high": "High",
+            "medium": "Medium",
+            "low": "Low",
+            "pro": "Pro",
+        }
+        parts = []
+        for part in str(mid).split("-"):
+            parts.append(replacements.get(part.lower(), part))
+        return " ".join(parts)
+
+    return [{"id": mid, "label": _label(mid)} for mid in ANTIGRAVITY_MODEL_IDS]
+
+
+def _patch_webui_config() -> bool:
+    """Expose google-antigravity in hermes-webui's /api/models catalog.
+
+    The standalone WebUI on port 8787 builds its picker from api.config, not
+    from the gateway's model_switch payload. Registering the provider in the
+    Hermes CLI is therefore not enough for the first /api/models response.
+    """
+    try:
+        import api.config as webui_config
+    except ImportError:
+        return True  # Not running hermes-webui; nothing to patch.
+
+    display = getattr(webui_config, "_PROVIDER_DISPLAY", None)
+    models = getattr(webui_config, "_PROVIDER_MODELS", None)
+    aliases = getattr(webui_config, "_PROVIDER_ALIASES", None)
+    if isinstance(display, dict):
+        display["google-antigravity"] = "Google Antigravity (OAuth)"
+        display["antigravity"] = "Google Antigravity (OAuth)"
+    if isinstance(models, dict) and not models.get("google-antigravity"):
+        models["google-antigravity"] = _antigravity_model_entries()
+    if isinstance(aliases, dict):
+        aliases["antigravity"] = "google-antigravity"
+        aliases["antigravity-oauth"] = "google-antigravity"
+        aliases["google-antigravity"] = "google-antigravity"
+
+    original = getattr(webui_config, "get_available_models", None)
+    if not callable(original):
+        return isinstance(display, dict) and isinstance(models, dict)
+    if getattr(webui_config, "_antigravity_get_available_models_patched", False):
+        return True
+
+    def _patched_get_available_models(*args, **kwargs):
+        result = original(*args, **kwargs)
+        try:
+            if not isinstance(result, dict):
+                return result
+            groups = result.setdefault("groups", [])
+            if any(g.get("provider_id") == "google-antigravity" for g in groups):
+                return result
+
+            from hermes_cli.auth import resolve_antigravity_oauth_runtime_credentials
+
+            creds = resolve_antigravity_oauth_runtime_credentials()
+            if not (creds and creds.get("api_key")):
+                return result
+
+            groups.insert(0, {
+                "provider": "Google Antigravity (OAuth)",
+                "provider_id": "google-antigravity",
+                "models": _antigravity_model_entries(),
+            })
+        except Exception as exc:
+            logger.debug("[antigravity_patch] WebUI model injection skipped: %s", exc)
+        return result
+
+    webui_config.get_available_models = _patched_get_available_models
+    webui_config._antigravity_get_available_models_patched = True
+
+    invalidate = getattr(webui_config, "invalidate_models_cache", None)
+    if callable(invalidate):
+        try:
+            invalidate()
+        except Exception:
+            logger.debug("[antigravity_patch] WebUI model cache invalidation failed")
+    logger.info("[antigravity_patch] injected hermes-webui /api/models row")
+    return True
+
+
 def apply() -> dict[str, bool]:
     """Apply all antigravity provider patches.
 
@@ -734,6 +823,7 @@ def apply() -> dict[str, bool]:
         ("model_picker", _patch_model_picker),
         ("model_switch_picker", _patch_model_switch_picker),
         ("auxiliary_client", _patch_auxiliary_client),
+        ("webui_config", _patch_webui_config),
     ]
 
     for name, fn in patches:

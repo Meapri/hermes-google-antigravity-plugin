@@ -175,6 +175,17 @@ def _antigravity_model_switch_patcher(_module):
         )
 
 
+def _antigravity_webui_config_patcher(_module):
+    """WebUI /api/models picker injection (fires on api.config import)."""
+    import antigravity_provider_patch
+    ok = antigravity_provider_patch._patch_webui_config()
+    if isinstance(ok, bool) and not ok:
+        sys.stderr.write(
+            "[hermes-antigravity-webui] WebUI model picker injection skipped "
+            "(API incompatibility — provider still usable via hermes config)\n"
+        )
+
+
 try:
     _make_import_hook("agent.error_classifier", _claude_error_classifier_patcher, "hermes-claude-auth-errors")
     _make_import_hook("agent.anthropic_adapter", _claude_patcher, "hermes-claude-auth")
@@ -193,6 +204,10 @@ try:
     _make_import_hook(
         "hermes_cli.model_switch", _antigravity_model_switch_patcher,
         "hermes-antigravity-model-switch"
+    )
+    _make_import_hook(
+        "api.config", _antigravity_webui_config_patcher,
+        "hermes-antigravity-webui"
     )
 except Exception as _exc:
     sys.stderr.write(f"[hermes-sitecustomize] hook install failed: {_exc}\n")
