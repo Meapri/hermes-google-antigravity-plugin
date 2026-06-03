@@ -96,8 +96,8 @@ When you run `hermes update` (which does `git pull` + `pip install`), the
 hook into `~/.hermes/hermes-agent/.git/hooks/`, so the moment `hermes update`
 runs its `git pull`, the hook detects the missing `sitecustomize.py` hooks and
 re-runs recovery for both this plugin and `hermes-claude-auth` automatically —
-no manual steps. It restores the coexistence `sitecustomize.py` (all 4 import
-hooks) and restarts the gateway.
+no manual steps. It restores the coexistence `sitecustomize.py` (7 Antigravity
+import hooks plus 2 Claude hooks) and restarts the gateway.
 
 > **Keep the clone in a persistent path** (e.g. `~/hermes-google-antigravity-plugin`),
 > **not `/tmp`**. The post-merge hook looks for the installer at
@@ -150,13 +150,18 @@ The 7 patches are: `providers`, `auth_registry`, `runtime_provider`,
 
 These are hard-won internals worth knowing before you touch the hooks:
 
-- **The `sitecustomize.py` needs all 4 Antigravity import hooks** (plus the
-  Claude hook = 5 total when coexisting). They fire on import of, in order:
+- **The `sitecustomize.py` needs all 7 Antigravity import hooks** (plus the
+  2 Claude hooks = 9 total when coexisting). They fire on import of, in order:
+  - `agent.error_classifier` — Claude auth error classification
   - `agent.anthropic_adapter` — Claude bypass (hermes-claude-auth)
   - `hermes_cli.auth` — Antigravity **early** apply:
     `_patch_auth_registry` + `_patch_providers` + `_patch_auxiliary_client`
   - `hermes_cli.providers` — full provider apply
+  - `agent.auxiliary_client` — auxiliary-client provider resolver
+  - `hermes_cli.runtime_provider` — runtime credential resolver after module load
   - `hermes_cli.main` — TUI model picker
+  - `hermes_cli.model_switch` — gateway `/model` picker row
+  - `api.config` — hermes-webui `/api/models` row
 - **Why the `hermes_cli.auth` hook is load-bearing (import-order trap):** if it
   is missing, `resolve_provider` runs its validation *before* `hermes_cli.providers`
   is ever imported, so the provider isn't registered yet and you get
@@ -169,9 +174,9 @@ These are hard-won internals worth knowing before you touch the hooks:
   -q "OK"`, not `python -c "import agent.google_antigravity_adapter"`.
 - **⚠ Don't run `hermes-claude-auth`'s `install.sh` raw when both are installed.**
   Its older/`fix`-branch installer can overwrite `sitecustomize.py` with a
-  **Claude-only** hook (no `--check`), silently dropping the 4 Antigravity hooks
+  **Claude-only** hook (no `--check`), silently dropping the 7 Antigravity hooks
   and bringing back `Unknown provider`. Recover by re-running **this** plugin's
-  `./scripts/install.sh`, which restores the coexistence hook (all 5). The
+  `./scripts/install.sh`, which restores the coexistence hook (all 9). The
   current claude-auth installer is coexistence-aware (it restores the shared
   multi-hook file first), but verify after any claude-auth reinstall.
 
@@ -241,7 +246,7 @@ Claude thinking is controlled by `include_thoughts: true` in the request. Adding
 | `~/.hermes/hermes-agent/agent/antigravity_quota_grpc.py` | Quota probing via gRPC |
 | `~/.hermes/hermes-agent/agent/antigravity_stream_grpc.py` | Optional context compression |
 | `~/.hermes/patches/antigravity_provider_patch.py` | Runtime monkey-patch — injects provider into Hermes |
-| `<venv>/site-packages/sitecustomize.py` | Import hook — auto-loads on Python startup (5 hooks: claude + 4 antigravity) |
+| `<venv>/site-packages/sitecustomize.py` | Import hook — auto-loads on Python startup (9 hooks: 2 Claude + 7 Antigravity) |
 | `~/.hermes/hermes-agent/.git/hooks/post-merge` | Auto-recovery hook — restores sitecustomize.py after `hermes update` |
 
 **No Hermes source files are modified.** All provider registration happens through the `sitecustomize.py` MetaPathFinder hook. This is the same pattern used by `hermes-claude-auth`.
