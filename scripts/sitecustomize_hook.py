@@ -78,8 +78,18 @@ def _make_import_hook(target_module, patcher_fn, label):
     sys.meta_path.insert(0, _Finder())
 
 
+def _load_claude_bypass():
+    try:
+        import anthropic_billing_bypass
+    except ImportError:
+        return None
+    return anthropic_billing_bypass
+
+
 def _claude_patcher(module):
-    import anthropic_billing_bypass
+    anthropic_billing_bypass = _load_claude_bypass()
+    if anthropic_billing_bypass is None:
+        return
     ok = anthropic_billing_bypass.apply_patches(module)
     if not ok:
         sys.stderr.write(
@@ -96,7 +106,9 @@ def _claude_error_classifier_patcher(_module):
     ``agent.anthropic_adapter``, the regular Claude adapter hook can be too late
     for that bound name. Patch the classifier module the moment it loads.
     """
-    import anthropic_billing_bypass
+    anthropic_billing_bypass = _load_claude_bypass()
+    if anthropic_billing_bypass is None:
+        return
     anthropic_billing_bypass._install_thinking_replay_classifier_patch()
 
 

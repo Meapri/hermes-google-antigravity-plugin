@@ -64,7 +64,9 @@ When the token expires it is auto-refreshed via `agy --print`.
 > by the runtime credential resolver against the `agy` token, not by the
 > `hermes auth` credential store. Skip it.
 
-If you already have `hermes-claude-auth` installed, the `sitecustomize.py` hook handles both patches side by side.
+If you already have `hermes-claude-auth` installed, the `sitecustomize.py` hook
+handles both patches side by side. If Claude auth is not installed, those
+optional Claude hooks no-op silently.
 
 ## Agent Handoff Prompt
 
@@ -328,6 +330,9 @@ These are hard-won internals worth knowing before you touch the hooks:
   - `hermes_cli.main` — TUI model picker
   - `hermes_cli.model_switch` — gateway `/model` picker row
   - `api.config` — hermes-webui `/api/models` row
+- The 2 Claude hooks are optional compatibility hooks. If
+  `anthropic_billing_bypass.py` is not installed, they must no-op silently so
+  Antigravity-only installs do not print traceback noise during `hermes model`.
 - **Why the `hermes_cli.auth` hook is load-bearing (import-order trap):** if it
   is missing, `resolve_provider` runs its validation *before* `hermes_cli.providers`
   is ever imported, so the provider isn't registered yet and you get
