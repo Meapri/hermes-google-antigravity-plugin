@@ -190,6 +190,9 @@ Default behavior is conservative:
 - when enabled, `auto` mode only attaches grounding to Gemini requests whose
   recent user text looks search/currentness sensitive (`검색`, `최신`, `출처`,
   `latest`, `current`, `news`, `verify`, etc.)
+- when native grounding is attached, external web search function tools such as
+  DuckDuckGo/Brave/Tavily search are suppressed by default so Hermes does not
+  pick the DuckDuckGo skill instead of Google grounding
 - Claude and GPT-OSS Antigravity models are skipped by default because native
   Gemini `google_search` support is model/backend specific
 
@@ -201,6 +204,8 @@ Configure it with:
 | `HERMES_ANTIGRAVITY_GOOGLE_GROUNDING` | `auto` | Attach Google Search grounding only for search/currentness-like Gemini prompts |
 | `HERMES_ANTIGRAVITY_GOOGLE_GROUNDING` | `always` / `1` / `true` | Attach Google Search grounding to every Gemini request |
 | `HERMES_ANTIGRAVITY_GOOGLE_GROUNDING` | `off` / `0` / `false` | Never attach Google Search grounding |
+| `HERMES_ANTIGRAVITY_GROUNDING_SUPPRESS_EXTERNAL_SEARCH_TOOLS` | unset / `true` | Drop external web search tools when native Google grounding is attached |
+| `HERMES_ANTIGRAVITY_GROUNDING_SUPPRESS_EXTERNAL_SEARCH_TOOLS` | `false` | Keep DuckDuckGo/Brave/Tavily tools available alongside native grounding |
 
 Example:
 

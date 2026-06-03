@@ -344,6 +344,55 @@ def test_google_grounding_auto_adds_google_search_for_current_gemini_requests(mo
     assert getattr(ag, "ANTIGRAVITY_GOOGLE_GROUNDING_HINT") in request["systemInstruction"]["parts"][0]["text"]
 
 
+def test_google_grounding_suppresses_external_search_tools_by_default(monkeypatch):
+    monkeypatch.delenv("HERMES_ANTIGRAVITY_GOOGLE_GROUNDING", raising=False)
+    monkeypatch.delenv("HERMES_ANTIGRAVITY_GROUNDING_SUPPRESS_EXTERNAL_SEARCH_TOOLS", raising=False)
+    monkeypatch.setenv("HERMES_GOOGLE_GROUNDING_SEARCH_ENABLED", "true")
+    request = {
+        "contents": [{"role": "user", "parts": [{"text": "최신 뉴스 검색해서 출처 알려줘"}]}],
+        "tools": [
+            {
+                "functionDeclarations": [
+                    {"name": "duckduckgo_search", "description": "Search the web", "parameters": {"type": "object"}},
+                    {"name": "read_file", "description": "Read a local file", "parameters": {"type": "object"}},
+                ]
+            }
+        ],
+    }
+
+    getattr(ag, "_apply_antigravity_request_transforms")(
+        request,
+        model="gemini-3.5-flash-high",
+    )
+
+    assert {"google_search": {}} in request["tools"]
+    declarations = request["tools"][0]["functionDeclarations"]
+    assert [item["name"] for item in declarations] == ["read_file"]
+
+
+def test_google_grounding_can_keep_external_search_tools_when_configured(monkeypatch):
+    monkeypatch.setenv("HERMES_ANTIGRAVITY_GOOGLE_GROUNDING", "always")
+    monkeypatch.setenv("HERMES_ANTIGRAVITY_GROUNDING_SUPPRESS_EXTERNAL_SEARCH_TOOLS", "false")
+    request = {
+        "contents": [{"role": "user", "parts": [{"text": "latest news"}]}],
+        "tools": [
+            {
+                "functionDeclarations": [
+                    {"name": "duckduckgo_search", "description": "Search the web", "parameters": {"type": "object"}},
+                ]
+            }
+        ],
+    }
+
+    getattr(ag, "_apply_antigravity_request_transforms")(
+        request,
+        model="gemini-3.5-flash-high",
+    )
+
+    assert {"google_search": {}} in request["tools"]
+    assert request["tools"][0]["functionDeclarations"][0]["name"] == "duckduckgo_search"
+
+
 def test_google_grounding_auto_skips_non_search_gemini_requests(monkeypatch):
     monkeypatch.delenv("HERMES_ANTIGRAVITY_GOOGLE_GROUNDING", raising=False)
     monkeypatch.setenv("HERMES_GOOGLE_GROUNDING_SEARCH_ENABLED", "true")

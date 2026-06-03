@@ -129,7 +129,8 @@ ANTIGRAVITY_SYSTEM_INSTRUCTION = (
 ANTIGRAVITY_GOOGLE_GROUNDING_HINT = (
     "Google Search grounding is enabled for this request. Use grounded search "
     "results for current facts, separate verified facts from inference, and "
-    "include source URLs when they materially help verification."
+    "include source URLs when they materially help verification. Prefer this "
+    "native grounding path over external web or DuckDuckGo search tools."
 )
 GPT_OSS_TOOL_PROTOCOL_HINT = (
     "Use the provided function-calling protocol for tools. Do not emit Harmony "
@@ -209,6 +210,59 @@ def _has_google_search_tool(request: Dict[str, Any]) -> bool:
         return False
     return any(isinstance(tool, dict) and isinstance(tool.get("google_search"), dict) for tool in tools)
 
+def _suppress_external_search_tools_for_grounding() -> bool:
+    return _env_truthy("HERMES_ANTIGRAVITY_GROUNDING_SUPPRESS_EXTERNAL_SEARCH_TOOLS", True)
+
+def _is_external_search_tool_declaration(declaration: Any) -> bool:
+    if not isinstance(declaration, dict):
+        return False
+    name = str(declaration.get("name") or "")
+    description = str(declaration.get("description") or "")
+    text = f"{name} {description}".lower()
+    markers = (
+        "duckduckgo", "duck_duck_go", "ddg", "brave", "tavily", "serp",
+        "web_search", "web-search", "search_web", "search-web", "internet_search",
+        "internet-search", "search_query", "search-query", "browser_search",
+        "browser-search",
+    )
+    if any(marker in text for marker in markers):
+        return True
+    return (
+        "search" in text
+        and any(marker in text for marker in ("web", "internet", "browser", "online"))
+    )
+
+def _drop_external_search_tools(request: Dict[str, Any]) -> None:
+    tools = request.get("tools")
+    if not isinstance(tools, list):
+        return
+    filtered_tools: List[Any] = []
+    for tool in tools:
+        if not isinstance(tool, dict):
+            filtered_tools.append(tool)
+            continue
+        if isinstance(tool.get("google_search"), dict):
+            filtered_tools.append(tool)
+            continue
+        if _is_external_search_tool_declaration(tool):
+            continue
+        declarations = tool.get("functionDeclarations")
+        if isinstance(declarations, list):
+            kept = [item for item in declarations if not _is_external_search_tool_declaration(item)]
+            if kept:
+                updated = dict(tool)
+                updated["functionDeclarations"] = kept
+                filtered_tools.append(updated)
+            continue
+        function = tool.get("function")
+        if isinstance(function, dict) and _is_external_search_tool_declaration(function):
+            continue
+        filtered_tools.append(tool)
+    if filtered_tools:
+        request["tools"] = filtered_tools
+    else:
+        request.pop("tools", None)
+
 def _maybe_enable_google_grounding(request: Dict[str, Any], *, model: str) -> None:
     mode = _antigravity_google_grounding_mode()
     if mode == "off" or not _is_gemini_model(model):
@@ -220,6 +274,8 @@ def _maybe_enable_google_grounding(request: Dict[str, Any], *, model: str) -> No
         return
     if not _has_google_search_tool(request):
         tools.append({"google_search": {}})
+    if _suppress_external_search_tools_for_grounding():
+        _drop_external_search_tools(request)
     _append_system_text(request, ANTIGRAVITY_GOOGLE_GROUNDING_HINT)
 
 def _normalize_claude_schema(schema: Any) -> Dict[str, Any]:
