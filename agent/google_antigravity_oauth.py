@@ -337,16 +337,24 @@ def _load_cli_file_credentials() -> Optional[GoogleCredentials]:
 def _load_macos_keychain_credentials() -> Optional[GoogleCredentials]:
     if platform.system() != "Darwin":
         return None
-    services = (
-        "Antigravity Safe Storage",
-        "antigravity-oauth-token",
-        "antigravity-cli",
-        "Antigravity CLI",
+    keychain_queries = (
+        ("gemini", "antigravity"),
+        ("Antigravity Safe Storage", "Antigravity"),
+        ("Antigravity Safe Storage", "Antigravity Key"),
+        ("Antigravity IDE Safe Storage", "Antigravity IDE"),
+        ("Antigravity Safe Storage", ""),
+        ("antigravity-oauth-token", ""),
+        ("antigravity-cli", ""),
+        ("Antigravity CLI", ""),
     )
-    for service in services:
+    for service, account in keychain_queries:
+        cmd = ["security", "find-generic-password", "-s", service]
+        if account:
+            cmd.extend(["-a", account])
+        cmd.append("-w")
         try:
             result = subprocess.run(
-                ["security", "find-generic-password", "-s", service, "-w"],
+                cmd,
                 capture_output=True,
                 text=True,
                 timeout=5,

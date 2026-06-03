@@ -154,7 +154,14 @@ def test_antigravity_loads_macos_keychain_token(monkeypatch, tmp_path):
     )
 
     def fake_run(cmd, **kwargs):
-        if cmd[:4] == ["security", "find-generic-password", "-s", "Antigravity Safe Storage"]:
+        if cmd[:6] == [
+            "security",
+            "find-generic-password",
+            "-s",
+            "gemini",
+            "-a",
+            "antigravity",
+        ]:
             return SimpleNamespace(returncode=0, stdout=payload, stderr="")
         return SimpleNamespace(returncode=1, stdout="", stderr="")
 

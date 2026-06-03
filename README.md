@@ -117,6 +117,10 @@ After repair, verify and report:
   Plus/Pro/Ultra accounts, `raw_paid_tier_id` or `context_paid_tier_id` should
   be a `g1-*` tier. `credit_attempts` shows whether requests will include
   `GOOGLE_ONE_AI` routing; it is separate from the base plan quota report.
+- On macOS, if auth still fails after `agy` login, verify that Keychain has the
+  CLI credential at service `gemini`, account `antigravity`, or one of the
+  Antigravity safe-storage fallbacks. Do not print or paste token values; only
+  inspect service/account names and JSON key names.
 - installed files match the repo:
   `~/.hermes/patches/antigravity_provider_patch.py`,
   `~/.hermes/hermes-agent/agent/google_antigravity_adapter.py`,
@@ -472,9 +476,29 @@ systemctl --user restart hermes-gateway
 **Auth check says `No Antigravity OAuth credentials found after agy refresh`** —
 the plugin could run `agy`, but could not read the refreshed credential. On
 Linux it reads `~/.gemini/antigravity-cli/antigravity-oauth-token`; on macOS it
-also checks the `Antigravity Safe Storage` Keychain item. If your `agy` uses a
-custom token file, set `HERMES_ANTIGRAVITY_CLI_TOKEN_PATH=/path/to/token` and
-run `./scripts/repair.sh --skip-pull`.
+checks Keychain in this order: service `gemini` account `antigravity`, then
+`Antigravity Safe Storage` accounts `Antigravity` and `Antigravity Key`, then
+`Antigravity IDE Safe Storage` account `Antigravity IDE`, then legacy
+service-only fallbacks. If your `agy` uses a custom token file, set
+`HERMES_ANTIGRAVITY_CLI_TOKEN_PATH=/path/to/token` and run
+`./scripts/repair.sh --skip-pull`.
+
+On macOS, this is a safe shape check for the current CLI Keychain token. It
+does not print token values:
+
+```bash
+python3 - <<'PY'
+import json, subprocess
+raw = subprocess.check_output(
+    ["security", "find-generic-password", "-s", "gemini", "-a", "antigravity", "-w"],
+    text=True,
+)
+data = json.loads(raw)
+print("top keys", sorted(data.keys()) if isinstance(data, dict) else type(data).__name__)
+token = data.get("token") if isinstance(data, dict) and isinstance(data.get("token"), dict) else data
+print("token keys", sorted(token.keys()) if isinstance(token, dict) else type(token).__name__)
+PY
+```
 
 **Auth check says `No Google OAuth credentials found` or suggests
 `hermes auth add google-antigravity`** — that is a stale Hermes Google OAuth
