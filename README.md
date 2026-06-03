@@ -516,10 +516,10 @@ spend.
 **"invalid_client" on fresh login** — the cached OAuth client secret is stale
 or was extracted incorrectly. Pull the latest plugin and run
 `./scripts/repair.sh --skip-pull`; the installer will regenerate
-`~/.hermes/auth/google_antigravity_client.json` with extractor version 2, but
-the login flow no longer sends `client_secret` by default. If it still fails,
-update `agy` and run repair again. Only opt back into secret sending with
-`HERMES_ANTIGRAVITY_USE_CLIENT_SECRET=1` for deliberate legacy testing.
+`~/.hermes/auth/google_antigravity_client.json` with extractor version 2. The
+login flow matches `agy`'s hosted callback flow and sends the extracted
+client secret to the token endpoint; the secret is not printed. If it still
+fails, update `agy` and run repair again.
 
 **Reinstall** — run `./scripts/repair.sh`. It refreshes the clone when safe, overwrites installed files, restarts the gateway when running, and verifies contracts.
 

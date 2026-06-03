@@ -40,15 +40,9 @@ MARKER_BASE_URL = "cloudcode-pa://antigravity"
 # Override via environment variables if needed:
 #   HERMES_ANTIGRAVITY_CLIENT_ID
 #   HERMES_ANTIGRAVITY_CLIENT_SECRET
-#   HERMES_ANTIGRAVITY_USE_CLIENT_SECRET=1
 ANTIGRAVITY_CLIENT_ID = ""
 ANTIGRAVITY_CLIENT_SECRET = ""
 _CLIENT_CACHE_EXTRACTOR_VERSION = 2
-
-
-def _use_client_secret() -> bool:
-    value = os.getenv("HERMES_ANTIGRAVITY_USE_CLIENT_SECRET", "").strip().lower()
-    return value in {"1", "true", "yes", "on"}
 
 
 def _client_cache_path() -> Path:
@@ -58,13 +52,12 @@ def _client_cache_path() -> Path:
 def _load_client_from_env_or_cache() -> bool:
     """Load OAuth client credentials without touching the large agy binary."""
     global ANTIGRAVITY_CLIENT_ID, ANTIGRAVITY_CLIENT_SECRET
-    secret_required = _use_client_secret()
-    if ANTIGRAVITY_CLIENT_ID and (ANTIGRAVITY_CLIENT_SECRET or not secret_required):
+    if ANTIGRAVITY_CLIENT_ID and ANTIGRAVITY_CLIENT_SECRET:
         return True
 
     env_id = os.getenv("HERMES_ANTIGRAVITY_CLIENT_ID", "").strip()
     env_secret = os.getenv("HERMES_ANTIGRAVITY_CLIENT_SECRET", "").strip()
-    if env_id and (env_secret or not secret_required):
+    if env_id and env_secret:
         ANTIGRAVITY_CLIENT_ID = env_id
         ANTIGRAVITY_CLIENT_SECRET = env_secret
         return True
@@ -78,7 +71,7 @@ def _load_client_from_env_or_cache() -> bool:
     extractor_version = int(data.get("extractor_version", 0) or 0)
     if extractor_version < _CLIENT_CACHE_EXTRACTOR_VERSION:
         return False
-    if cache_id and (cache_secret or not secret_required):
+    if cache_id and cache_secret:
         ANTIGRAVITY_CLIENT_ID = cache_id
         ANTIGRAVITY_CLIENT_SECRET = cache_secret
         return True
@@ -165,11 +158,8 @@ def _get_client_id():
 
 
 def _get_client_secret():
-    # Google's PKCE browser flow for this Antigravity client rejects the
-    # embedded agy secret on some builds with invalid_client. Do not send a
-    # client_secret by default; allow an explicit env opt-in for legacy cases.
-    if not _use_client_secret():
-        return ""
+    # Match agy's hosted callback flow: the token endpoint rejects the
+    # authorization-code exchange for this client when client_secret is absent.
     if not _load_client_from_env_or_cache():
         _extract_from_agy_binary()
     return ANTIGRAVITY_CLIENT_SECRET
