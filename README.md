@@ -509,7 +509,11 @@ entitlement and AI credit/overage consumption are separate; `/agyquota` can
 show routing state, but Google's quota API does not prove actual AI credit
 spend.
 
-**"invalid_client" on fresh login** — the OAuth client credentials extracted from your `agy` binary may be outdated. Update `agy` to the latest version and reinstall the plugin.
+**"invalid_client" on fresh login** — the cached OAuth client secret is stale
+or was extracted incorrectly. Pull the latest plugin and run
+`./scripts/repair.sh --skip-pull`; the installer will regenerate
+`~/.hermes/auth/google_antigravity_client.json` with extractor version 2. If it
+still fails, update `agy` and run repair again.
 
 **Reinstall** — run `./scripts/repair.sh`. It refreshes the clone when safe, overwrites installed files, restarts the gateway when running, and verifies contracts.
 

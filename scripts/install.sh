@@ -65,6 +65,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+EXTRACTOR_VERSION = 2
 home = Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes")
 cache = home / "auth" / "google_antigravity_client.json"
 cache.parent.mkdir(parents=True, exist_ok=True)
@@ -96,6 +97,7 @@ if env_id and env_secret:
     write_cache({
         "client_id": env_id,
         "client_secret": env_secret,
+        "extractor_version": EXTRACTOR_VERSION,
         "source": "env",
     })
     print(f"[✓] Primed Antigravity OAuth client cache from env: {cache}")
@@ -123,6 +125,7 @@ except (OSError, json.JSONDecodeError):
 if (
     existing.get("client_id")
     and existing.get("client_secret")
+    and int(existing.get("extractor_version", 0) or 0) >= EXTRACTOR_VERSION
     and existing.get("source_agy_path") == agy_meta.get("source_agy_path")
     and existing.get("source_agy_size") == agy_meta.get("source_agy_size")
     and existing.get("source_agy_mtime_ns") == agy_meta.get("source_agy_mtime_ns")
@@ -137,32 +140,26 @@ except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpi
     sys.exit(0)
 
 text = data.decode(errors="replace")
-ids = re.findall(r"(\d+-[\w]+\.apps\.googleusercontent\.com)", text)
-secrets = re.findall(r"(GOCSPX-[\w]+)", text)
+ids = list(re.finditer(r"(\d+-[\w]+\.apps\.googleusercontent\.com)", text))
+secrets = list(re.finditer(r"(GOCSPX-[A-Za-z0-9_-]+)", text))
 if not ids or not secrets:
     print("[!] No Google OAuth client id/secret found in agy — cache not updated")
     sys.exit(0)
 
-chosen_index = 0
-client_id = ""
-for i, cid in enumerate(ids):
-    if cid.startswith("1071006060591"):
-        client_id = cid
-        chosen_index = i
-        break
-if not client_id:
-    client_id = ids[0]
-
-if chosen_index < len(secrets):
-    client_secret = secrets[chosen_index]
-elif len(secrets) == 1:
-    client_secret = secrets[0]
-else:
-    client_secret = secrets[0]
+target = next(
+    (match for match in ids if match.group(1).startswith("1071006060591")),
+    ids[0],
+)
+client_id = target.group(1)
+client_secret = min(
+    secrets,
+    key=lambda match: abs(match.start() - target.start()),
+).group(1)
 
 write_cache({
     "client_id": client_id,
     "client_secret": client_secret,
+    "extractor_version": EXTRACTOR_VERSION,
     "source": "install strings agy",
     **agy_meta,
 })

@@ -222,3 +222,46 @@ def test_antigravity_loads_alternate_cli_token_path_with_access_token(monkeypatc
     assert creds is not None
     assert creds.access_token == "alt-access"
     assert creds.refresh_token == "alt-refresh"
+
+
+def test_antigravity_extracts_hyphenated_agy_oauth_secret():
+    from agent import google_antigravity_oauth as oauth
+
+    text = "\n".join(
+        [
+            "884354919052-other.apps.googleusercontent.com",
+            "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com",
+            "GOCSPX-K58FW-part-two_part-three",
+        ]
+    )
+
+    client_id, client_secret = oauth._extract_client_from_agy_strings(text)
+
+    assert client_id == "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
+    assert client_secret == "GOCSPX-K58FW-part-two_part-three"
+
+
+def test_antigravity_rejects_old_client_cache(tmp_path, monkeypatch):
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from agent import google_antigravity_oauth as oauth
+
+    hermes_home = tmp_path / "hermes"
+    cache = hermes_home / "auth" / "google_antigravity_client.json"
+    cache.parent.mkdir(parents=True)
+    cache.write_text(
+        json.dumps(
+            {
+                "client_id": "1071006060591-client.apps.googleusercontent.com",
+                "client_secret": "GOCSPX-truncated",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(oauth, "ANTIGRAVITY_CLIENT_ID", "")
+    monkeypatch.setattr(oauth, "ANTIGRAVITY_CLIENT_SECRET", "")
+    token = set_hermes_home_override(hermes_home)
+    try:
+        assert not oauth._load_client_from_env_or_cache()
+    finally:
+        reset_hermes_home_override(token)

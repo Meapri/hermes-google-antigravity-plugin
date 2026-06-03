@@ -40,6 +40,7 @@ MARKER_BASE_URL = "cloudcode-pa://antigravity"
 #   HERMES_ANTIGRAVITY_CLIENT_SECRET
 ANTIGRAVITY_CLIENT_ID = ""
 ANTIGRAVITY_CLIENT_SECRET = ""
+_CLIENT_CACHE_EXTRACTOR_VERSION = 2
 
 
 def _client_cache_path() -> Path:
@@ -65,6 +66,9 @@ def _load_client_from_env_or_cache() -> bool:
         return False
     cache_id = str(data.get("client_id", "") or "").strip()
     cache_secret = str(data.get("client_secret", "") or "").strip()
+    extractor_version = int(data.get("extractor_version", 0) or 0)
+    if extractor_version < _CLIENT_CACHE_EXTRACTOR_VERSION:
+        return False
     if cache_id and cache_secret:
         ANTIGRAVITY_CLIENT_ID = cache_id
         ANTIGRAVITY_CLIENT_SECRET = cache_secret
@@ -81,6 +85,7 @@ def _save_client_cache() -> None:
         {
             "client_id": ANTIGRAVITY_CLIENT_ID,
             "client_secret": ANTIGRAVITY_CLIENT_SECRET,
+            "extractor_version": _CLIENT_CACHE_EXTRACTOR_VERSION,
             "source": "agy strings cache",
         },
         indent=2,
@@ -102,12 +107,32 @@ def _save_client_cache() -> None:
             pass
 
 
+def _extract_client_from_agy_strings(text: str) -> tuple[str, str]:
+    import re
+
+    id_matches = list(re.finditer(r"(\d+-[\w]+\.apps\.googleusercontent\.com)", text))
+    secret_matches = list(re.finditer(r"(GOCSPX-[A-Za-z0-9_-]+)", text))
+    if not id_matches or not secret_matches:
+        return "", ""
+
+    target = next(
+        (match for match in id_matches if match.group(1).startswith("1071006060591")),
+        id_matches[0],
+    )
+    client_id = target.group(1)
+    client_secret = min(
+        secret_matches,
+        key=lambda match: abs(match.start() - target.start()),
+    ).group(1)
+    return client_id, client_secret
+
+
 def _extract_from_agy_binary():
     """Extract OAuth client credentials from the agy CLI binary at runtime."""
     global ANTIGRAVITY_CLIENT_ID, ANTIGRAVITY_CLIENT_SECRET
     if _load_client_from_env_or_cache():
         return
-    import subprocess, re
+    import subprocess
     try:
         agy_path = subprocess.check_output(["which", "agy"], text=True, timeout=5).strip()
     except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
@@ -117,27 +142,10 @@ def _extract_from_agy_binary():
         text = data.decode(errors="replace")
     except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
         return
-    ids = re.findall(r'(\d+-[\w]+\.apps\.googleusercontent\.com)', text)
-    secrets = re.findall(r'(GOCSPX-[\w]+)', text)
-    if ids and secrets:
-        # Prefer the NoeFabris/Antigravity client (1071006060591-...) which agy CLI uses.
-        # Some agy builds contain multiple client IDs but only one visible secret;
-        # do not leave the secret blank in that case, or every startup will rescan
-        # the large binary trying to fill it again.
-        chosen_index = 0
-        for i, cid in enumerate(ids):
-            if cid.startswith("1071006060591"):
-                ANTIGRAVITY_CLIENT_ID = cid
-                chosen_index = i
-                break
-        if not ANTIGRAVITY_CLIENT_ID:
-            ANTIGRAVITY_CLIENT_ID = ids[0]
-        if chosen_index < len(secrets):
-            ANTIGRAVITY_CLIENT_SECRET = secrets[chosen_index]
-        elif len(secrets) == 1:
-            ANTIGRAVITY_CLIENT_SECRET = secrets[0]
-        else:
-            ANTIGRAVITY_CLIENT_SECRET = secrets[0]
+    client_id, client_secret = _extract_client_from_agy_strings(text)
+    if client_id and client_secret:
+        ANTIGRAVITY_CLIENT_ID = client_id
+        ANTIGRAVITY_CLIENT_SECRET = client_secret
         _save_client_cache()
 
 
