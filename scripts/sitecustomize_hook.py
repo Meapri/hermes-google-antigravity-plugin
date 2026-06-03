@@ -155,6 +155,17 @@ def _antigravity_auth_early_patcher(_module):
     antigravity_provider_patch._patch_auxiliary_client()
 
 
+def _antigravity_auth_commands_patcher(_module):
+    """Patch `hermes auth add google-antigravity` when auth_commands loads first.
+
+    The `hermes auth add ...` CLI path imports `hermes_cli.auth_commands`
+    directly. If this happens before the `hermes_cli.auth` hook fires,
+    google-antigravity is treated as an API-key provider and prompts for a key.
+    """
+    import antigravity_provider_patch
+    antigravity_provider_patch._patch_auth_registry()
+
+
 def _antigravity_auxiliary_patcher(_module):
     """Patch auxiliary_client even when it imports before hermes_cli.auth."""
     import antigravity_provider_patch
@@ -238,6 +249,10 @@ try:
     _make_import_hook("agent.anthropic_adapter", _claude_patcher, "hermes-claude-auth")
     _make_import_hook(
         "hermes_cli.auth", _antigravity_auth_early_patcher, "hermes-antigravity-auth"
+    )
+    _make_import_hook(
+        "hermes_cli.auth_commands", _antigravity_auth_commands_patcher,
+        "hermes-antigravity-auth-commands"
     )
     _make_import_hook(
         "hermes_cli.providers", _antigravity_providers_patcher, "hermes-antigravity"

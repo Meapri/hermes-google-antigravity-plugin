@@ -70,6 +70,10 @@ credentials at `~/.hermes/auth/google_antigravity.json`. If a compatible `agy`
 CLI OAuth token file exists at `~/.gemini/antigravity-cli/antigravity-oauth-token`,
 the provider can still import it, but that path is optional.
 
+You can also start the same browser login from `hermes model`: choose
+Google Antigravity, and if no token is present the model picker opens Google
+OAuth before continuing to model selection.
+
 If you already have `hermes-claude-auth` installed, the `sitecustomize.py` hook
 handles both patches side by side. If Claude auth is not installed, those
 optional Claude hooks no-op silently.
@@ -120,6 +124,8 @@ After repair, verify and report:
   `hermes_cli.model_switch`, and `api.config`.
 - `hermes auth add google-antigravity` is available and starts the Google
   OAuth login path.
+- `hermes model` can also start Google OAuth when Google Antigravity is selected
+  and no token is present.
 - `./scripts/plan_status.py` reports the expected paid tier. For Google AI
   Plus/Pro/Ultra accounts, `raw_paid_tier_id` or `context_paid_tier_id` should
   be a `g1-*` tier. `credit_attempts` shows whether requests will include
@@ -269,8 +275,8 @@ When you run `hermes update` (which does `git pull` + `pip install`), the
 hook into `~/.hermes/hermes-agent/.git/hooks/`, so the moment `hermes update`
 runs its `git pull`, the hook detects the missing `sitecustomize.py` hooks and
 re-runs recovery for both this plugin and `hermes-claude-auth` automatically
-with no manual steps. It restores the coexistence `sitecustomize.py` (9 Antigravity
-import hooks plus 2 Claude hooks) and restarts the gateway.
+with no manual steps. It restores the coexistence `sitecustomize.py` (10
+Antigravity import hooks plus 2 Claude hooks) and restarts the gateway.
 
 > **Keep the clone in a persistent path** (e.g. `~/hermes-google-antigravity-plugin`),
 > **not `/tmp`**. The post-merge hook looks for the installer at
@@ -326,12 +332,14 @@ The 11 patches are: `providers`, `auth_registry`, `commands`,
 
 These are hard-won internals worth knowing before you touch the hooks:
 
-- **The `sitecustomize.py` needs all 9 Antigravity import hooks** (plus the
-  2 Claude hooks = 11 total when coexisting). They fire on import of, in order:
+- **The `sitecustomize.py` needs all 10 Antigravity import hooks** (plus the
+  2 Claude hooks = 12 total when coexisting). They fire on import of, in order:
   - `agent.error_classifier` — Claude auth error classification
   - `agent.anthropic_adapter` — Claude bypass (hermes-claude-auth)
   - `hermes_cli.auth` — Antigravity **early** apply:
     `_patch_auth_registry` + `_patch_providers` + `_patch_auxiliary_client`
+  - `hermes_cli.auth_commands` — `hermes auth add google-antigravity` OAuth
+    login dispatch
   - `hermes_cli.providers` — full provider apply
   - `hermes_cli.commands` — `/agyquota` command metadata
   - `cli` — `/agyquota` command handler
@@ -355,9 +363,9 @@ These are hard-won internals worth knowing before you touch the hooks:
   -q "OK"`, not `python -c "import agent.google_antigravity_adapter"`.
 - **⚠ Don't run `hermes-claude-auth`'s `install.sh` raw when both are installed.**
   Its older/`fix`-branch installer can overwrite `sitecustomize.py` with a
-  **Claude-only** hook (no `--check`), silently dropping the 9 Antigravity hooks
+  **Claude-only** hook (no `--check`), silently dropping the 10 Antigravity hooks
   and bringing back `Unknown provider`. Recover by re-running **this** plugin's
-  `./scripts/install.sh`, which restores the coexistence hook (all 11). The
+  `./scripts/install.sh`, which restores the coexistence hook (all 12). The
   current claude-auth installer is coexistence-aware (it restores the shared
   multi-hook file first), but verify after any claude-auth reinstall.
 
@@ -428,7 +436,7 @@ Claude thinking is controlled by `include_thoughts: true` in the request. Adding
 | `~/.hermes/hermes-agent/agent/antigravity_quota_report.py` | `/agyquota` plan/quota report builder |
 | `~/.hermes/hermes-agent/agent/antigravity_stream_grpc.py` | Optional context compression |
 | `~/.hermes/patches/antigravity_provider_patch.py` | Runtime monkey-patch — injects provider into Hermes |
-| `<venv>/site-packages/sitecustomize.py` | Import hook — auto-loads on Python startup (11 hooks: 2 Claude + 9 Antigravity) |
+| `<venv>/site-packages/sitecustomize.py` | Import hook — auto-loads on Python startup (12 hooks: 2 Claude + 10 Antigravity) |
 | `~/.hermes/hermes-agent/.git/hooks/post-merge` | Auto-recovery hook — restores sitecustomize.py after `hermes update` |
 
 **No Hermes source files are modified.** All provider registration happens through the `sitecustomize.py` MetaPathFinder hook. This is the same pattern used by `hermes-claude-auth`.

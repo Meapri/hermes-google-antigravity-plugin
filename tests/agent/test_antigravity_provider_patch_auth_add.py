@@ -128,3 +128,60 @@ def test_auth_add_non_antigravity_delegates(monkeypatch):
     auth_commands.auth_add_command(SimpleNamespace(provider="openai-api"))
 
     assert calls == [("original", "openai-api")]
+
+
+def test_model_flow_google_antigravity_opens_login_when_auth_missing(monkeypatch, capsys):
+    patch = _load_patch_module()
+
+    calls = []
+    auth_mod = ModuleType("hermes_cli.auth")
+    auth_state = {"ready": False}
+
+    def resolve_credentials():
+        if not auth_state["ready"]:
+            raise RuntimeError("missing token")
+        return {"api_key": "access", "email": "user@example.com"}
+
+    def prompt_model_selection(models, current_model=""):
+        calls.append(("prompt", tuple(models), current_model))
+        return "gemini-3.5-flash-high"
+
+    def save_model_choice(model):
+        calls.append(("save", model))
+
+    def update_config(provider, base_url):
+        calls.append(("config", provider, base_url))
+
+    auth_mod.resolve_antigravity_oauth_runtime_credentials = resolve_credentials
+    auth_mod._prompt_model_selection = prompt_model_selection
+    auth_mod._save_model_choice = save_model_choice
+    auth_mod._update_config_for_provider = update_config
+
+    hermes_cli = ModuleType("hermes_cli")
+    hermes_cli.auth = auth_mod
+    monkeypatch.setitem(sys.modules, "hermes_cli", hermes_cli)
+    monkeypatch.setitem(sys.modules, "hermes_cli.auth", auth_mod)
+
+    agent_mod = ModuleType("agent")
+    oauth_mod = ModuleType("agent.google_antigravity_oauth")
+
+    def fake_login():
+        calls.append(("login", "google-antigravity"))
+        auth_state["ready"] = True
+        return {"access_token": "access", "email": "user@example.com"}
+
+    oauth_mod.run_antigravity_oauth_login_pure = fake_login
+    monkeypatch.setitem(sys.modules, "agent", agent_mod)
+    monkeypatch.setitem(sys.modules, "agent.google_antigravity_oauth", oauth_mod)
+
+    patch._model_flow_google_antigravity({}, current_model="")
+
+    assert calls[0] == ("login", "google-antigravity")
+    assert calls[1][0] == "prompt"
+    assert calls[2:] == [
+        ("save", "gemini-3.5-flash-high"),
+        ("config", "google-antigravity", "cloudcode-pa://antigravity"),
+    ]
+    out = capsys.readouterr().out
+    assert "Opening Google login for google-antigravity" in out
+    assert "Authenticated as: user@example.com" in out

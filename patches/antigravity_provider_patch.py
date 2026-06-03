@@ -517,7 +517,7 @@ def _patch_agent_runtime() -> bool:
 def _model_flow_google_antigravity(_config, current_model=""):
     """Google Antigravity OAuth provider model picker flow.
 
-    Uses the agy CLI token for auth — no API key needed.
+    Uses Google OAuth for auth — no API key needed.
     Shows the curated model list and saves the selection.
     """
     from hermes_cli.auth import (
@@ -535,9 +535,23 @@ def _model_flow_google_antigravity(_config, current_model=""):
             print(f"  Authenticated as: {email}")
     except Exception as exc:
         print(f"  Auth check failed: {exc}")
-        print("  Run `hermes auth add google-antigravity` to sign in with Google.")
-        print("  If you prefer agy token reuse, run `agy` once and then `./scripts/repair.sh --skip-pull`.")
-        return
+        print("  Opening Google login for google-antigravity...")
+        try:
+            from agent.google_antigravity_oauth import run_antigravity_oauth_login_pure
+            from hermes_cli.auth import resolve_antigravity_oauth_runtime_credentials
+
+            login_creds = run_antigravity_oauth_login_pure()
+            email = str(login_creds.get("email", "") or "")
+            creds = resolve_antigravity_oauth_runtime_credentials()
+            email = str(creds.get("email", "") or email)
+            if email:
+                print(f"  Authenticated as: {email}")
+            else:
+                print("  Google Antigravity OAuth login completed.")
+        except Exception as login_exc:
+            print(f"  Google login failed: {login_exc}")
+            print("  You can retry with `hermes auth add google-antigravity`.")
+            return
 
     # Curated model list (same as plugin supported models)
     AG_MODELS = list(ANTIGRAVITY_MODEL_IDS)

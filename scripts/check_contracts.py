@@ -14,6 +14,7 @@ from pathlib import Path
 
 HOOK_NEEDLES = {
     "hermes_cli.auth": "hermes_cli.auth",
+    "hermes_cli.auth_commands": "hermes_cli.auth_commands",
     "hermes_cli.providers": "hermes_cli.providers",
     "hermes_cli.commands": "hermes_cli.commands",
     "cli": '"cli"',
