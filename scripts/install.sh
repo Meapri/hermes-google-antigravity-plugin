@@ -252,7 +252,8 @@ fi
 
 # ── Step 2: Copy agent runtime files ────────────────────────────────
 for f in google_antigravity_adapter.py google_antigravity_oauth.py \
-         antigravity_quota_grpc.py antigravity_stream_grpc.py; do
+         antigravity_quota_grpc.py antigravity_quota_report.py \
+         antigravity_stream_grpc.py; do
     cp "$REPO_ROOT/agent/$f" "$HERMES_AGENT_DIR/agent/"
 done
 printf "${GREEN}[✓] Copied agent runtime files${RESET}\n"
@@ -277,7 +278,7 @@ else
     cp "$REPO_ROOT/scripts/sitecustomize_hook.py" "$SITECUSTOMIZE"
 fi
 chmod 644 "$SITECUSTOMIZE"
-printf "${GREEN}[✓] Installed sitecustomize hook (7 Antigravity + 2 Claude import hooks)${RESET}\n"
+printf "${GREEN}[✓] Installed sitecustomize hook (9 Antigravity + 2 Claude import hooks)${RESET}\n"
 
 # ── Step 6: Verify patches ──────────────────────────────────────────
 PATCH_CHECK=$("$VENV_DIR/bin/python" -c "

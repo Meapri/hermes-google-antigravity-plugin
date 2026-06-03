@@ -15,6 +15,8 @@ from pathlib import Path
 HOOK_NEEDLES = {
     "hermes_cli.auth": "hermes_cli.auth",
     "hermes_cli.providers": "hermes_cli.providers",
+    "hermes_cli.commands": "hermes_cli.commands",
+    "cli": '"cli"',
     "agent.auxiliary_client": "agent.auxiliary_client",
     "hermes_cli.runtime_provider": "hermes_cli.runtime_provider",
     "hermes_cli.main": "hermes_cli.main",
@@ -25,6 +27,7 @@ HOOK_NEEDLES = {
 CRITICAL_PATCHES = {
     "providers",
     "auth_registry",
+    "commands",
     "runtime_provider",
     "auxiliary_client",
 }
@@ -34,6 +37,7 @@ NONCRITICAL_PATCHES = {
     "models_module",
     "model_picker",
     "model_switch_picker",
+    "cli_agyquota",
     "webui_config",
 }
 
@@ -104,6 +108,7 @@ def check_files(reporter: Reporter, repo_root: Path, hermes_home: Path, hermes_a
         (hermes_agent_dir / "agent/google_antigravity_adapter.py", repo_root / "agent/google_antigravity_adapter.py"),
         (hermes_agent_dir / "agent/google_antigravity_oauth.py", repo_root / "agent/google_antigravity_oauth.py"),
         (hermes_agent_dir / "agent/antigravity_quota_grpc.py", repo_root / "agent/antigravity_quota_grpc.py"),
+        (hermes_agent_dir / "agent/antigravity_quota_report.py", repo_root / "agent/antigravity_quota_report.py"),
         (hermes_agent_dir / "agent/antigravity_stream_grpc.py", repo_root / "agent/antigravity_stream_grpc.py"),
         (
             hermes_home / "plugins/model-providers/google-antigravity/__init__.py",
@@ -202,6 +207,16 @@ def check_import_contracts(
             reporter.fail("runtime provider resolver is not patched")
     except Exception as exc:
         reporter.fail(f"cannot inspect hermes_cli.runtime_provider: {type(exc).__name__}: {exc}")
+
+    try:
+        commands = importlib.import_module("hermes_cli.commands")
+        resolve = getattr(commands, "resolve_command", None)
+        if callable(resolve) and getattr(resolve("agyquota"), "name", "") == "agyquota":
+            reporter.ok("/agyquota command metadata is registered")
+        else:
+            reporter.fail("/agyquota command metadata is not registered")
+    except Exception as exc:
+        reporter.fail(f"cannot inspect hermes_cli.commands: {type(exc).__name__}: {exc}")
 
 
 def main() -> int:

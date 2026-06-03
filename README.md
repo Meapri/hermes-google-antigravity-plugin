@@ -106,14 +106,17 @@ After repair, verify and report:
   `hermes-google-antigravity-plugin`.
 - the Hermes venv `sitecustomize.py` exists and contains these hooks:
   `hermes_cli.auth`, `hermes_cli.providers`, `hermes_cli.runtime_provider`,
-  `agent.auxiliary_client`, `hermes_cli.model_switch`, and `api.config`.
+  `hermes_cli.commands`, `cli`, `agent.auxiliary_client`,
+  `hermes_cli.model_switch`, and `api.config`.
 - `./scripts/plan_status.py` reports the expected paid tier. For Google AI
   Plus/Pro/Ultra accounts, `raw_paid_tier_id` or `context_paid_tier_id` should
-  be a `g1-*` tier and `credit_attempts` should include `True`.
+  be a `g1-*` tier. `credit_attempts` shows whether requests will include
+  `GOOGLE_ONE_AI` routing; it is separate from the base plan quota report.
 - installed files match the repo:
   `~/.hermes/patches/antigravity_provider_patch.py`,
   `~/.hermes/hermes-agent/agent/google_antigravity_adapter.py`,
-  `~/.hermes/hermes-agent/agent/google_antigravity_oauth.py`, and
+  `~/.hermes/hermes-agent/agent/google_antigravity_oauth.py`,
+  `~/.hermes/hermes-agent/agent/antigravity_quota_report.py`, and
   `~/.hermes/plugins/model-providers/google-antigravity/plugin.yaml`.
 
 If credentials, network, and the `hermes` command are available, run:
@@ -137,26 +140,38 @@ hermes config set model.default gemini-3.5-flash-high
 
 Provider aliases: `google-antigravity`, `antigravity`, `antigravity-oauth`
 
-### Google AI Plus/Pro/Ultra Plan Routing
+### Google AI Plus/Pro/Ultra Plan And Quota Routing
 
 This provider reuses the OAuth token produced by the official `agy` CLI. On
 each client startup it probes `loadCodeAssist` to discover the assigned project
 and account tier. Google can report Google One paid plans in the raw
 `paidTier` field even when Hermes' older `google_code_assist.py` parser only
 exposes `current_tier_id=standard-tier`; the adapter reads that raw `paidTier`
-so Plus/Pro/Ultra accounts still opt into Google One AI credit routing.
+so Plus/Pro/Ultra plan entitlement is detected correctly.
 
-Default credit mode is `auto`:
+Paid plan entitlement, base request quota, and AI credit/overage routing are
+not the same signal:
+
+- `paidTier` confirms the Google AI Plus/Pro/Ultra plan attached to the `agy`
+  account/session.
+- `retrieveUserQuota` reports the base Code Assist request buckets that Google
+  exposes through the REST quota API.
+- `enabledCreditTypes=["GOOGLE_ONE_AI"]` asks Google to route eligible requests
+  through Google One AI credit/overage handling. Google does not expose actual
+  AI credit consumption through this quota API, so the plugin reports this as
+  routing state, not as proven credit spend.
+
+Default routing mode is `auto`:
 
 - paid Google One tier detected (`g1-plus`, `g1-pro`, `g1-ultra`, or matching
-  plan name): request bodies use `enabledCreditTypes=["GOOGLE_ONE_AI"]`
+  plan name): request bodies request `enabledCreditTypes=["GOOGLE_ONE_AI"]`
 - no paid tier detected: request bodies use the base Code Assist bucket
 
 Override with `HERMES_ANTIGRAVITY_GOOGLE_ONE_AI_CREDITS`:
 
 | Value | Behavior |
 |-------|----------|
-| `auto` / unset | Use Google One AI credits only when a paid tier is detected |
+| `auto` / unset | Request Google One AI routing only when a paid tier is detected |
 | `always` / `1` / `true` | Always request Google One AI credit routing |
 | `fallback` | Try base quota first, then Google One AI credits on capacity errors |
 | `never` / `0` / `false` | Never request Google One AI credit routing |
@@ -177,6 +192,24 @@ context_has_google_one_ai_credits: True
 credit_mode: auto
 credit_attempts: [True]
 ```
+
+Inside an interactive Hermes CLI session, run `/agyquota` to see the same
+account tier plus live quota status:
+
+```text
+/agyquota
+Google Antigravity quota/status
+  currentTier: standard-tier
+  paidTier: g1-ultra-tier
+  paidTierName: Gemini Code Assist in Google One AI Ultra
+  creditRoutingMode: auto
+  creditAttempts: [True]
+```
+
+`/agyquota` also prints base REST quota buckets and attempts the Antigravity
+gRPC quota endpoint for extended/base buckets. If Google rejects the gRPC token
+scope, the command reports that explicitly instead of pretending extended
+quota is known.
 
 ### TUI Model Picker (`hermes model`)
 
@@ -223,8 +256,8 @@ When you run `hermes update` (which does `git pull` + `pip install`), the
 **Automatic recovery (default).** `install.sh` installs a git `post-merge`
 hook into `~/.hermes/hermes-agent/.git/hooks/`, so the moment `hermes update`
 runs its `git pull`, the hook detects the missing `sitecustomize.py` hooks and
-re-runs recovery for both this plugin and `hermes-claude-auth` automatically —
-no manual steps. It restores the coexistence `sitecustomize.py` (7 Antigravity
+re-runs recovery for both this plugin and `hermes-claude-auth` automatically
+with no manual steps. It restores the coexistence `sitecustomize.py` (9 Antigravity
 import hooks plus 2 Claude hooks) and restarts the gateway.
 
 > **Keep the clone in a persistent path** (e.g. `~/hermes-google-antigravity-plugin`),
@@ -271,23 +304,25 @@ Every monkey-patch function verifies Hermes API compatibility via
 `inspect.signature` before applying and returns `False` on mismatch
 instead of crashing. If Hermes internals change, the affected patch
 declines gracefully and the rest keep working. `apply()` reports
-results like `9/9 patches applied` or `8/9 (failed: model_picker)`.
+results like `11/11 patches applied` or `10/11 (failed: model_picker)`.
 
-The 9 patches are: `providers`, `auth_registry`, `runtime_provider`,
-`agent_runtime`, `models_module`, `model_picker`, `model_switch_picker`,
-`auxiliary_client`, `webui_config`.
+The 11 patches are: `providers`, `auth_registry`, `commands`,
+`runtime_provider`, `cli_agyquota`, `agent_runtime`, `models_module`,
+`model_picker`, `model_switch_picker`, `auxiliary_client`, `webui_config`.
 
 ### Maintainer notes (import-order traps & verification)
 
 These are hard-won internals worth knowing before you touch the hooks:
 
-- **The `sitecustomize.py` needs all 7 Antigravity import hooks** (plus the
-  2 Claude hooks = 9 total when coexisting). They fire on import of, in order:
+- **The `sitecustomize.py` needs all 9 Antigravity import hooks** (plus the
+  2 Claude hooks = 11 total when coexisting). They fire on import of, in order:
   - `agent.error_classifier` — Claude auth error classification
   - `agent.anthropic_adapter` — Claude bypass (hermes-claude-auth)
   - `hermes_cli.auth` — Antigravity **early** apply:
     `_patch_auth_registry` + `_patch_providers` + `_patch_auxiliary_client`
   - `hermes_cli.providers` — full provider apply
+  - `hermes_cli.commands` — `/agyquota` command metadata
+  - `cli` — `/agyquota` command handler
   - `agent.auxiliary_client` — auxiliary-client provider resolver
   - `hermes_cli.runtime_provider` — runtime credential resolver after module load
   - `hermes_cli.main` — TUI model picker
@@ -305,9 +340,9 @@ These are hard-won internals worth knowing before you touch the hooks:
   -q "OK"`, not `python -c "import agent.google_antigravity_adapter"`.
 - **⚠ Don't run `hermes-claude-auth`'s `install.sh` raw when both are installed.**
   Its older/`fix`-branch installer can overwrite `sitecustomize.py` with a
-  **Claude-only** hook (no `--check`), silently dropping the 7 Antigravity hooks
+  **Claude-only** hook (no `--check`), silently dropping the 9 Antigravity hooks
   and bringing back `Unknown provider`. Recover by re-running **this** plugin's
-  `./scripts/install.sh`, which restores the coexistence hook (all 9). The
+  `./scripts/install.sh`, which restores the coexistence hook (all 11). The
   current claude-auth installer is coexistence-aware (it restores the shared
   multi-hook file first), but verify after any claude-auth reinstall.
 
@@ -375,9 +410,10 @@ Claude thinking is controlled by `include_thoughts: true` in the request. Adding
 | `~/.hermes/hermes-agent/agent/google_antigravity_adapter.py` | API adapter (Cloud Code PA → OpenAI-compatible) |
 | `~/.hermes/hermes-agent/agent/google_antigravity_oauth.py` | OAuth handling + `agy` binary credential extraction |
 | `~/.hermes/hermes-agent/agent/antigravity_quota_grpc.py` | Quota probing via gRPC |
+| `~/.hermes/hermes-agent/agent/antigravity_quota_report.py` | `/agyquota` plan/quota report builder |
 | `~/.hermes/hermes-agent/agent/antigravity_stream_grpc.py` | Optional context compression |
 | `~/.hermes/patches/antigravity_provider_patch.py` | Runtime monkey-patch — injects provider into Hermes |
-| `<venv>/site-packages/sitecustomize.py` | Import hook — auto-loads on Python startup (9 hooks: 2 Claude + 7 Antigravity) |
+| `<venv>/site-packages/sitecustomize.py` | Import hook — auto-loads on Python startup (11 hooks: 2 Claude + 9 Antigravity) |
 | `~/.hermes/hermes-agent/.git/hooks/post-merge` | Auto-recovery hook — restores sitecustomize.py after `hermes update` |
 
 **No Hermes source files are modified.** All provider registration happens through the `sitecustomize.py` MetaPathFinder hook. This is the same pattern used by `hermes-claude-auth`.
@@ -425,10 +461,14 @@ systemctl --user restart hermes-gateway
 
 **Token refresh fails** — make sure `agy` is on PATH and logged in. Run `agy --print "OK"` manually to verify.
 
-**Google AI Plus/Pro/Ultra is not being used** — run `./scripts/plan_status.py`.
-If `raw_paid_tier_id` is empty, Google did not report a paid tier for the `agy`
-account/session. If `raw_paid_tier_id` is `g1-*` but `credit_attempts` does not
-include `True`, run `./scripts/repair.sh` to reinstall the latest adapter.
+**Google AI Plus/Pro/Ultra is not being used** — run `./scripts/plan_status.py`
+and, inside Hermes CLI, `/agyquota`. If `raw_paid_tier_id` is empty, Google did
+not report a paid tier for the `agy` account/session. If `raw_paid_tier_id` is
+`g1-*` but `credit_attempts` does not include `True`, run
+`./scripts/repair.sh` to reinstall the latest adapter. Remember that paid plan
+entitlement and AI credit/overage consumption are separate; `/agyquota` can
+show routing state, but Google's quota API does not prove actual AI credit
+spend.
 
 **"invalid_client" on fresh login** — the OAuth client credentials extracted from your `agy` binary may be outdated. Update `agy` to the latest version and reinstall the plugin.
 

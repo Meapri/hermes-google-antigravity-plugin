@@ -106,6 +106,18 @@ def _antigravity_providers_patcher(_module):
     antigravity_provider_patch.apply()
 
 
+def _antigravity_commands_patcher(_module):
+    """Slash command metadata injection (fires on hermes_cli.commands import)."""
+    import antigravity_provider_patch
+    antigravity_provider_patch._patch_commands()
+
+
+def _antigravity_cli_patcher(_module):
+    """/agyquota CLI dispatch injection (fires on cli import)."""
+    import antigravity_provider_patch
+    antigravity_provider_patch._patch_cli_agyquota()
+
+
 def _antigravity_auth_early_patcher(_module):
     """Early registry injection (fires on hermes_cli.auth import).
 
@@ -217,6 +229,13 @@ try:
     )
     _make_import_hook(
         "hermes_cli.providers", _antigravity_providers_patcher, "hermes-antigravity"
+    )
+    _make_import_hook(
+        "hermes_cli.commands", _antigravity_commands_patcher,
+        "hermes-antigravity-commands"
+    )
+    _make_import_hook(
+        "cli", _antigravity_cli_patcher, "hermes-antigravity-cli"
     )
     _make_import_hook(
         "agent.auxiliary_client", _antigravity_auxiliary_patcher, "hermes-antigravity-auxiliary"

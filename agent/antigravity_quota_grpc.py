@@ -228,5 +228,5 @@ def fetch_quota_status(
             channel.close()
 
     except Exception as exc:
-        logger.warning("FetchQuotaStatus gRPC call failed: %s", exc)
+        logger.debug("FetchQuotaStatus gRPC call failed: %s", exc)
         return None

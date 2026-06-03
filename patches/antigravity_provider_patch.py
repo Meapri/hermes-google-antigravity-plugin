@@ -213,6 +213,45 @@ def _patch_auth_registry() -> bool:
     return True
 
 
+def _patch_commands() -> bool:
+    """Register the Antigravity quota slash command in Hermes command metadata."""
+    try:
+        import hermes_cli.commands as commands_mod
+    except ImportError:
+        logger.warning("[antigravity_patch] commands module unavailable")
+        return False
+
+    registry = getattr(commands_mod, "COMMAND_REGISTRY", None)
+    CommandDef = getattr(commands_mod, "CommandDef", None)
+    if not isinstance(registry, list) or CommandDef is None:
+        logger.warning("[antigravity_patch] command registry unavailable")
+        return False
+    cmd = next((item for item in registry if getattr(item, "name", "") == "agyquota"), None)
+    if cmd is None:
+        cmd = CommandDef(
+            "agyquota",
+            "Show Google Antigravity plan and quota usage",
+            "Info",
+            cli_only=True,
+        )
+        registry.append(cmd)
+
+    build_lookup = getattr(commands_mod, "_build_command_lookup", None)
+    if callable(build_lookup):
+        commands_mod._COMMAND_LOOKUP = build_lookup()
+    build_description = getattr(commands_mod, "_build_description", None)
+    if callable(build_description):
+        description = build_description(cmd)
+        commands = getattr(commands_mod, "COMMANDS", None)
+        if isinstance(commands, dict):
+            commands["/agyquota"] = description
+        by_category = getattr(commands_mod, "COMMANDS_BY_CATEGORY", None)
+        if isinstance(by_category, dict):
+            by_category.setdefault("Info", {})["/agyquota"] = description
+    logger.info("[antigravity_patch] registered /agyquota command metadata")
+    return True
+
+
 def _patch_runtime_provider() -> bool:
     """Inject google-antigravity handling into runtime_provider.
 
@@ -316,6 +355,53 @@ def _patch_runtime_provider() -> bool:
     rp.resolve_runtime_provider = patched_main
     rp._antigravity_runtime_patched = True
     logger.info("[antigravity_patch] injected runtime_provider handlers")
+    return True
+
+
+def _patch_cli_agyquota() -> bool:
+    """Inject /agyquota handling into the Hermes CLI command dispatcher."""
+    try:
+        import cli as cli_mod
+    except ImportError:
+        logger.warning("[antigravity_patch] cli module unavailable")
+        return False
+
+    HermesCLI = getattr(cli_mod, "HermesCLI", None)
+    if HermesCLI is None:
+        logger.warning("[antigravity_patch] HermesCLI missing")
+        return False
+    if getattr(HermesCLI, "_antigravity_agyquota_patched", False):
+        return True
+
+    original_process_command = getattr(HermesCLI, "process_command", None)
+    if not callable(original_process_command):
+        logger.warning("[antigravity_patch] HermesCLI.process_command missing")
+        return False
+
+    def _handle_agyquota_command(self, cmd_original: str) -> None:
+        try:
+            from agent.antigravity_quota_report import build_antigravity_quota_report
+            output = build_antigravity_quota_report()
+        except Exception as exc:
+            output = f"Antigravity quota lookup failed: {exc}"
+        printer = getattr(self, "_console_print", None)
+        if callable(printer):
+            for line in output.splitlines():
+                printer(f"  {line}" if line else "")
+        else:
+            print(output)
+
+    def _patched_process_command(self, command: str) -> bool:
+        base = (command or "").strip().split(None, 1)[0].lower().lstrip("/")
+        if base == "agyquota":
+            _handle_agyquota_command(self, command)
+            return True
+        return original_process_command(self, command)
+
+    HermesCLI._handle_agyquota_command = _handle_agyquota_command
+    HermesCLI.process_command = _patched_process_command
+    HermesCLI._antigravity_agyquota_patched = True
+    logger.info("[antigravity_patch] injected /agyquota CLI handler")
     return True
 
 
@@ -862,7 +948,9 @@ def apply() -> dict[str, bool]:
     patches = [
         ("providers", _patch_providers),
         ("auth_registry", _patch_auth_registry),
+        ("commands", _patch_commands),
         ("runtime_provider", _patch_runtime_provider),
+        ("cli_agyquota", _patch_cli_agyquota),
         ("agent_runtime", _patch_agent_runtime),
         ("models_module", _patch_models_module),
         ("model_picker", _patch_model_picker),
