@@ -469,6 +469,13 @@ systemctl --user restart hermes-gateway
 
 **Token refresh fails** — make sure `agy` is on PATH and logged in. Run `agy --print "OK"` manually to verify.
 
+**Auth check says `No Antigravity OAuth credentials found after agy refresh`** —
+the plugin could run `agy`, but could not read the refreshed credential. On
+Linux it reads `~/.gemini/antigravity-cli/antigravity-oauth-token`; on macOS it
+also checks the `Antigravity Safe Storage` Keychain item. If your `agy` uses a
+custom token file, set `HERMES_ANTIGRAVITY_CLI_TOKEN_PATH=/path/to/token` and
+run `./scripts/repair.sh --skip-pull`.
+
 **Auth check says `No Google OAuth credentials found` or suggests
 `hermes auth add google-antigravity`** — that is a stale Hermes Google OAuth
 path, not the intended Antigravity flow. Run `agy` once and sign in, then run

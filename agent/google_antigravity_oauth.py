@@ -16,6 +16,8 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import platform
+import subprocess
 import threading
 import time
 from datetime import datetime, timezone
@@ -179,6 +181,24 @@ def _cli_credentials_path() -> Path:
     return Path.home() / ".gemini" / "antigravity-cli" / "antigravity-oauth-token"
 
 
+def _candidate_cli_credentials_paths() -> list[Path]:
+    primary = _cli_credentials_path()
+    candidates = [
+        primary,
+        Path.home() / ".gemini" / "antigravity-cli" / "oauth-token",
+        Path.home() / ".gemini" / "antigravity" / "antigravity-oauth-token",
+        Path.home() / ".gemini" / "antigravity" / "oauth-token",
+    ]
+    seen: set[str] = set()
+    result: list[Path] = []
+    for path in candidates:
+        key = str(path.expanduser())
+        if key not in seen:
+            seen.add(key)
+            result.append(path.expanduser())
+    return result
+
+
 def _lock_path() -> Path:
     return _credentials_path().with_suffix(".json.lock")
 
@@ -245,29 +265,105 @@ def _format_cli_expiry(expires_ms: int) -> str:
     return datetime.fromtimestamp(expires_ms / 1000, tz=timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def _load_cli_credentials() -> Optional[GoogleCredentials]:
-    path = _cli_credentials_path()
-    if not path.exists():
-        return None
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
+def _credentials_from_mapping(data: Dict[str, Any]) -> Optional[GoogleCredentials]:
     if not isinstance(data, dict):
         return None
     # Support both agy CLI's nested format: {"token": {"access_token": ..., "refresh_token": ..., "expiry": ...}}
     # and the flat format: {"access_token": ..., "refresh_token": ..., "expiry": ...}
-    token_data = data.get("token") if "token" in data and isinstance(data.get("token"), dict) else data
-    access = str(token_data.get("access_token", "") or "")
-    refresh = str(token_data.get("refresh_token", "") or "")
+    token_data = data.get("token") if isinstance(data.get("token"), dict) else data
+    access = str(
+        token_data.get("access_token")
+        or token_data.get("accessToken")
+        or token_data.get("access")
+        or ""
+    )
+    refresh = str(
+        token_data.get("refresh_token")
+        or token_data.get("refreshToken")
+        or token_data.get("refresh")
+        or ""
+    )
     if not access or not refresh:
         return None
     return GoogleCredentials(
         access_token=access,
         refresh_token=refresh,
-        expires_ms=_parse_cli_expiry_ms(token_data.get("expiry")),
-        email="",
+        expires_ms=_parse_cli_expiry_ms(
+            token_data.get("expiry")
+            or token_data.get("expires_at")
+            or token_data.get("expiresAt")
+            or token_data.get("expires")
+        ),
+        email=str(data.get("email") or token_data.get("email") or ""),
     )
+
+
+def _load_credentials_from_json_text(text: str) -> Optional[GoogleCredentials]:
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(data, dict):
+        creds = _credentials_from_mapping(data)
+        if creds is not None:
+            return creds
+        for value in data.values():
+            if isinstance(value, dict):
+                creds = _credentials_from_mapping(value)
+                if creds is not None:
+                    return creds
+            elif isinstance(value, list):
+                for item in value:
+                    if isinstance(item, dict):
+                        creds = _credentials_from_mapping(item)
+                        if creds is not None:
+                            return creds
+    return None
+
+
+def _load_cli_file_credentials() -> Optional[GoogleCredentials]:
+    for path in _candidate_cli_credentials_paths():
+        if not path.exists():
+            continue
+        try:
+            creds = _load_credentials_from_json_text(path.read_text(encoding="utf-8"))
+        except OSError:
+            continue
+        if creds is not None:
+            return creds
+    return None
+
+
+def _load_macos_keychain_credentials() -> Optional[GoogleCredentials]:
+    if platform.system() != "Darwin":
+        return None
+    services = (
+        "Antigravity Safe Storage",
+        "antigravity-oauth-token",
+        "antigravity-cli",
+        "Antigravity CLI",
+    )
+    for service in services:
+        try:
+            result = subprocess.run(
+                ["security", "find-generic-password", "-s", service, "-w"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+        except Exception:
+            continue
+        if result.returncode != 0 or not result.stdout.strip():
+            continue
+        creds = _load_credentials_from_json_text(result.stdout.strip())
+        if creds is not None:
+            return creds
+    return None
+
+
+def _load_cli_credentials() -> Optional[GoogleCredentials]:
+    return _load_cli_file_credentials() or _load_macos_keychain_credentials()
 
 
 def _mirror_credentials_to_cli(creds: GoogleCredentials) -> None:
@@ -338,7 +434,6 @@ def _refresh_token_via_agy_cli() -> bool:
 
     Returns True if the agy CLI ran successfully.
     """
-    import subprocess
     try:
         subprocess.run(
             ["agy", "--print", "OK", "--print-timeout", "30s"],
