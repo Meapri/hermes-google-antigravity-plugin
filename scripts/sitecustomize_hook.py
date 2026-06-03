@@ -175,6 +175,29 @@ def _antigravity_model_switch_patcher(_module):
         )
 
 
+def _antigravity_runtime_provider_patcher(_module):
+    """Runtime provider injection (fires on hermes_cli.runtime_provider import).
+
+    The full apply() runs on the hermes_cli.providers import hook, but on the
+    gateway startup path hermes_cli.providers can import while
+    hermes_cli.runtime_provider is still mid-import — at which point
+    ``resolve_runtime_provider`` is not yet defined, so _patch_runtime_provider()
+    silently skips and the gateway falls back to the default provider with no
+    credentials ("No inference provider configured"). This dedicated hook fires
+    AFTER runtime_provider finishes loading, guaranteeing the resolver exists.
+    _patch_runtime_provider() is idempotent (guarded by
+    ``rp._antigravity_runtime_patched``), so re-running it here is harmless even
+    if apply() already succeeded.
+    """
+    import antigravity_provider_patch
+    ok = antigravity_provider_patch._patch_runtime_provider()
+    if isinstance(ok, bool) and not ok:
+        sys.stderr.write(
+            "[hermes-antigravity-runtime] runtime_provider injection skipped "
+            "(API incompatibility detected)\n"
+        )
+
+
 def _antigravity_webui_config_patcher(_module):
     """WebUI /api/models picker injection (fires on api.config import)."""
     import antigravity_provider_patch
@@ -197,6 +220,10 @@ try:
     )
     _make_import_hook(
         "agent.auxiliary_client", _antigravity_auxiliary_patcher, "hermes-antigravity-auxiliary"
+    )
+    _make_import_hook(
+        "hermes_cli.runtime_provider", _antigravity_runtime_provider_patcher,
+        "hermes-antigravity-runtime"
     )
     _make_import_hook(
         "hermes_cli.main", _antigravity_main_patcher, "hermes-antigravity-main"

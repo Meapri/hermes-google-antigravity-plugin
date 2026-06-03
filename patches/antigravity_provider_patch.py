@@ -165,6 +165,43 @@ def _patch_auth_registry() -> bool:
         )
         logger.info("[antigravity_patch] injected credential resolver")
 
+    original_get_auth_status = getattr(auth_mod, "get_auth_status", None)
+    if callable(original_get_auth_status) and not getattr(
+        auth_mod, "_antigravity_get_auth_status_patched", False
+    ):
+        def _antigravity_get_auth_status(provider_id=None, *args, **kwargs):
+            get_active_provider = getattr(auth_mod, "get_active_provider", None)
+            active_provider = ""
+            if provider_id is None and callable(get_active_provider):
+                try:
+                    active_provider = get_active_provider() or ""
+                except Exception:
+                    active_provider = ""
+            target = str(provider_id or active_provider or "").strip().lower()
+            if target in {"google-antigravity", "antigravity", "antigravity-oauth"}:
+                info = {
+                    "logged_in": False,
+                    "provider": "google-antigravity",
+                    "auth_type": "oauth_external",
+                }
+                try:
+                    creds = auth_mod.resolve_antigravity_oauth_runtime_credentials()
+                    info.update({
+                        "logged_in": bool(creds.get("api_key")),
+                        "source": creds.get("source", "antigravity-oauth"),
+                        "email": creds.get("email", ""),
+                        "project_id": creds.get("project_id", ""),
+                        "expires_at_ms": creds.get("expires_at_ms"),
+                    })
+                except Exception as exc:
+                    info["error"] = str(exc)
+                return info
+            return original_get_auth_status(provider_id, *args, **kwargs)
+
+        auth_mod.get_auth_status = _antigravity_get_auth_status
+        auth_mod._antigravity_get_auth_status_patched = True
+        logger.info("[antigravity_patch] injected auth status resolver")
+
     # Extend _OAUTH_CAPABLE_PROVIDERS in auth_commands
     try:
         import hermes_cli.auth_commands as ac
@@ -186,6 +223,13 @@ def _patch_runtime_provider() -> bool:
     except ImportError:
         logger.warning("[antigravity_patch] runtime_provider module unavailable")
         return False
+
+    # Idempotency guard: this function can be invoked both by apply() (via the
+    # hermes_cli.providers import hook) and by the dedicated
+    # hermes_cli.runtime_provider import hook. Wrapping resolve_runtime_provider
+    # twice would double-nest the handler, so bail if already patched.
+    if getattr(rp, "_antigravity_runtime_patched", False):
+        return True
 
     pool_resolver = getattr(rp, "_resolve_runtime_from_pool_entry", None)
     main_resolver = getattr(rp, "resolve_runtime_provider", None)
@@ -270,6 +314,7 @@ def _patch_runtime_provider() -> bool:
         )
 
     rp.resolve_runtime_provider = patched_main
+    rp._antigravity_runtime_patched = True
     logger.info("[antigravity_patch] injected runtime_provider handlers")
     return True
 
