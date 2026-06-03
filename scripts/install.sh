@@ -15,14 +15,20 @@ MARKER="# hermes-antigravity managed"
 # ── Parse flags ─────────────────────────────────────────────────────
 POST_UPDATE=false
 CHECK_ONLY=false
+REPAIR=false
 
 for arg in "$@"; do
     case "$arg" in
         --post-update) POST_UPDATE=true ;;
         --check)       CHECK_ONLY=true ;;
+        --repair)      REPAIR=true ;;
         *) ;;
     esac
 done
+
+if $REPAIR; then
+    exec "$REPO_ROOT/scripts/repair.sh"
+fi
 
 # ── Pre-flight checks ───────────────────────────────────────────────
 if [[ ! -d "$HERMES_AGENT_DIR" ]]; then
@@ -212,10 +218,17 @@ if $CHECK_ONLY; then
     done
 
     if $ALL_OK; then
+        if ! "$VENV_DIR/bin/python" "$REPO_ROOT/scripts/check_contracts.py" \
+            --repo-root "$REPO_ROOT"; then
+            ALL_OK=false
+        fi
+    fi
+
+    if $ALL_OK; then
         printf "\n${GREEN}All patches intact.${RESET}\n"
         exit 0
     else
-        printf "\n${YELLOW}Patches missing or drifted. To restore from repo: ./scripts/install.sh --post-update${RESET}\n"
+        printf "\n${YELLOW}Patches missing, drifted, or incompatible. To repair: ./scripts/repair.sh${RESET}\n"
         printf "${YELLOW}If the installed copy is the newer one, sync it back to the repo and commit instead.${RESET}\n"
         exit 1
     fi
@@ -305,6 +318,6 @@ if $POST_UPDATE; then
 else
     echo "Installation complete. Next steps:"
     echo "  1. Make sure agy CLI is authenticated (run 'agy' once)"
-    echo "  2. Run: hermes auth add google-antigravity"
-    echo "  3. Use: hermes chat --provider google-antigravity -m gemini-3.5-flash-high"
+    echo "  2. Use: hermes chat --provider google-antigravity -m gemini-3.5-flash-high"
+    echo "  3. Repair after Hermes updates with: ./scripts/repair.sh"
 fi

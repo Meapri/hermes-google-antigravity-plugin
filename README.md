@@ -77,9 +77,11 @@ https://github.com/Meapri/hermes-google-antigravity-plugin.
 
 Use a persistent clone at ~/hermes-google-antigravity-plugin. If the clone
 exists, fetch/pull it with --ff-only. If it does not exist, clone it there.
-Then run ./scripts/install.sh for a first install, or ./scripts/install.sh
---post-update when Hermes was just updated. Run ./scripts/install.sh --check
-afterward and report the result.
+Then run ./scripts/install.sh for a first install. When Hermes was just updated
+or anything looks broken, run ./scripts/repair.sh; it updates this plugin clone,
+reinstalls runtime files/hooks, runs ./scripts/install.sh --check, and reports
+the result. Use ./scripts/repair.sh --smoke if credentials and network are
+available and you want an end-to-end provider call.
 
 Do not run `hermes auth add google-antigravity`; this provider uses the
 existing Antigravity CLI (`agy`) OAuth token. First verify that Hermes Agent is
@@ -126,6 +128,35 @@ Select it from the menu and pick a model — no manual config editing needed.
 If the TUI integration breaks after a Hermes update, the provider still works
 via `hermes config set`. See [After Hermes Update](#after-hermes-update) below.
 
+## One-Command Repair
+
+Use this whenever Hermes updates frequently, provider behavior looks wrong, or
+you want to force the installed files/hooks back to the repo state:
+
+```bash
+cd ~/hermes-google-antigravity-plugin
+./scripts/repair.sh
+```
+
+`repair.sh` does the full recovery path:
+
+1. Fast-forwards the plugin clone when the working tree is clean.
+2. Reinstalls Antigravity runtime files, patch files, plugin metadata, and the
+   shared `sitecustomize.py` hook.
+3. Reinstalls the Hermes `post-merge` auto-recovery hook.
+4. Restarts `hermes-gateway.service` when it is running.
+5. Runs `./scripts/install.sh --check`, including file drift checks,
+   `sitecustomize.py` hook checks, and Hermes patch contract checks.
+
+For an end-to-end provider call after repair:
+
+```bash
+./scripts/repair.sh --smoke
+```
+
+Use `./scripts/repair.sh --skip-pull` if you intentionally have local changes
+in the plugin clone and only want to reinstall/check the current checkout.
+
 ## After Hermes Update
 
 When you run `hermes update` (which does `git pull` + `pip install`), the
@@ -144,22 +175,22 @@ import hooks plus 2 Claude hooks) and restarts the gateway.
 > only clone lives in `/tmp`, a reboot wipes it and auto-recovery silently
 > can't run.
 
-**Manual check / recovery** (if you disabled the hook or want to verify):
+**Manual check** (if you disabled the hook or want to verify):
 ```bash
 cd ~/hermes-google-antigravity-plugin
 ./scripts/install.sh --check
 ```
 
-**Recover (only restores what's needed):**
+**Manual repair:**
 ```bash
 cd ~/hermes-google-antigravity-plugin
-git pull && ./scripts/install.sh --post-update
+./scripts/repair.sh
 ```
 
 **Full recovery (if anything went badly wrong):**
 ```bash
 cd ~/hermes-google-antigravity-plugin
-git pull && ./scripts/install.sh
+./scripts/repair.sh --smoke
 ```
 
 ### What survives `hermes update`
@@ -172,7 +203,9 @@ git pull && ./scripts/install.sh
 | **`sitecustomize.py`** | venv `site-packages/` | ❌ Overwritten |
 | Auth token | `~/.gemini/...` | ✅ Managed by agy |
 
-Only `sitecustomize.py` needs recovery. `--post-update` does exactly that.
+`sitecustomize.py` is the file most likely to be overwritten, but `repair.sh`
+also refreshes the copied runtime files and verifies every installed file
+against the repo so drift is caught immediately.
 
 ### Patch safety (for developers)
 
@@ -180,10 +213,11 @@ Every monkey-patch function verifies Hermes API compatibility via
 `inspect.signature` before applying and returns `False` on mismatch
 instead of crashing. If Hermes internals change, the affected patch
 declines gracefully and the rest keep working. `apply()` reports
-results like `7/7 patches applied` or `6/7 (failed: model_picker)`.
+results like `9/9 patches applied` or `8/9 (failed: model_picker)`.
 
-The 7 patches are: `providers`, `auth_registry`, `runtime_provider`,
-`agent_runtime`, `models_module`, `model_picker`, `auxiliary_client`.
+The 9 patches are: `providers`, `auth_registry`, `runtime_provider`,
+`agent_runtime`, `models_module`, `model_picker`, `model_switch_picker`,
+`auxiliary_client`, `webui_config`.
 
 ### Maintainer notes (import-order traps & verification)
 
@@ -327,7 +361,7 @@ systemctl --user restart hermes-gateway
 
 ## Troubleshooting
 
-**"Unknown provider: google-antigravity"** — the `sitecustomize.py` hook didn't load. Restart the gateway: `systemctl --user restart hermes-gateway`. If that doesn't help, run `./scripts/install.sh --post-update`.
+**"Unknown provider: google-antigravity"** — the `sitecustomize.py` hook didn't load. Restart the gateway: `systemctl --user restart hermes-gateway`. If that doesn't help, run `./scripts/repair.sh`.
 
 **google-antigravity not in `hermes model` list** — the TUI picker patch may have been declined due to Hermes API changes. Run `hermes config set model.provider google-antigravity` as a workaround.
 
@@ -335,9 +369,9 @@ systemctl --user restart hermes-gateway
 
 **"invalid_client" on fresh login** — the OAuth client credentials extracted from your `agy` binary may be outdated. Update `agy` to the latest version and reinstall the plugin.
 
-**Reinstall** — just run `./scripts/install.sh` again. It overwrites all installed files and restarts the gateway.
+**Reinstall** — run `./scripts/repair.sh`. It refreshes the clone when safe, overwrites installed files, restarts the gateway when running, and verifies contracts.
 
-**After `hermes update`** — run `./scripts/install.sh --check` to see what's broken, then `./scripts/install.sh --post-update` to fix it.
+**After `hermes update`** — run `./scripts/repair.sh`. For a live provider call too, run `./scripts/repair.sh --smoke`.
 
 ## Compatibility
 

@@ -81,7 +81,7 @@ recovered=false
 if [ -f "$ANTIGRAVITY_PATCH" ] && [ -n "$ANTIGRAVITY_INSTALL" ]; then
     echo ""
     printf "${GREEN}→ Recovering Google Antigravity provider...${RESET}\n"
-    bash "$ANTIGRAVITY_INSTALL" --post-update || true
+    bash "$ANTIGRAVITY_INSTALL" --repair || true
     recovered=true
 fi
 
