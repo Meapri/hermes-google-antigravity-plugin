@@ -37,6 +37,39 @@ def test_antigravity_load_imports_cli_token_when_hermes_token_missing(tmp_path, 
     assert creds.expires_ms > int(time.time() * 1000)
 
 
+def test_antigravity_valid_token_prefers_existing_agy_cli_token(tmp_path, monkeypatch):
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from agent import google_antigravity_oauth as oauth
+
+    hermes_home = tmp_path / "hermes"
+    home = tmp_path / "home"
+    cli_path = home / ".gemini" / "antigravity-cli" / "antigravity-oauth-token"
+    cli_path.parent.mkdir(parents=True)
+    expiry = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat().replace("+00:00", "Z")
+    cli_path.write_text(
+        json.dumps(
+            {
+                "token": {
+                    "access_token": "cli-access",
+                    "refresh_token": "cli-refresh",
+                    "token_type": "Bearer",
+                    "expiry": expiry,
+                },
+                "auth_method": "consumer",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HOME", str(home))
+    token = set_hermes_home_override(hermes_home)
+    try:
+        access_token = oauth.get_valid_access_token()
+    finally:
+        reset_hermes_home_override(token)
+
+    assert access_token == "cli-access"
+
+
 def test_antigravity_save_mirrors_hermes_token_to_cli_shape(tmp_path, monkeypatch):
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from agent import google_antigravity_oauth as oauth

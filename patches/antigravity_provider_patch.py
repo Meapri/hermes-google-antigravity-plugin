@@ -496,7 +496,8 @@ def _model_flow_google_antigravity(_config, current_model=""):
             print(f"  Authenticated as: {email}")
     except Exception as exc:
         print(f"  Auth check failed: {exc}")
-        print("  Run: hermes auth add google-antigravity")
+        print("  Run `agy` once and sign in, then run `./scripts/repair.sh --skip-pull`.")
+        print("  Do not run `hermes auth add google-antigravity`; this provider reuses the agy token.")
         return
 
     # Curated model list (same as plugin supported models)

@@ -351,19 +351,31 @@ def _refresh_token_via_agy_cli() -> bool:
 
 def get_valid_access_token(*, force_refresh: bool = False) -> str:
     with _antigravity_profile():
+        creds = load_credentials()
+        if creds is not None and not force_refresh and not creds.access_token_expired():
+            token = creds.access_token
+        else:
+            token = ""
         try:
-            token = google_oauth.get_valid_access_token(force_refresh=force_refresh)
-            creds = google_oauth.load_credentials()
+            if not token:
+                token = google_oauth.get_valid_access_token(force_refresh=force_refresh)
+                creds = google_oauth.load_credentials()
         except GoogleOAuthError:
             # Standard OAuth refresh failed — likely client_secret mismatch
             # with the secret extracted from the agy binary.  Fall back to
             # agy CLI which manages its own secrets internally.
             if not _refresh_token_via_agy_cli():
-                raise
+                raise GoogleOAuthError(
+                    "No Antigravity OAuth credentials found. Run `agy` once and sign in.",
+                    code="antigravity_oauth_not_logged_in",
+                )
             # Re-read the token that agy just refreshed
             creds = _load_cli_credentials()
             if creds is None:
-                raise
+                raise GoogleOAuthError(
+                    "No Antigravity OAuth credentials found after `agy` refresh.",
+                    code="antigravity_oauth_not_logged_in",
+                )
             # Persist to Hermes credential store so future refreshes
             # pick up the agy-refreshed token first
             google_oauth.save_credentials(creds)

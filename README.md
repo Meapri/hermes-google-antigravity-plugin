@@ -466,6 +466,12 @@ systemctl --user restart hermes-gateway
 
 **Token refresh fails** — make sure `agy` is on PATH and logged in. Run `agy --print "OK"` manually to verify.
 
+**Auth check says `No Google OAuth credentials found` or suggests
+`hermes auth add google-antigravity`** — that is a stale Hermes Google OAuth
+path, not the intended Antigravity flow. Run `agy` once and sign in, then run
+`./scripts/repair.sh --skip-pull`. This provider should reuse the `agy` token;
+`hermes auth add google-antigravity` is not required.
+
 **Google AI Plus/Pro/Ultra is not being used** — run `./scripts/plan_status.py`
 and, inside Hermes CLI, `/agyquota`. If `raw_paid_tier_id` is empty, Google did
 not report a paid tier for the `agy` account/session. If `raw_paid_tier_id` is
