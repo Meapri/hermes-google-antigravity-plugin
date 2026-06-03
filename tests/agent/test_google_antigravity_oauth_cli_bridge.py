@@ -1,5 +1,6 @@
 import json
 import time
+import urllib.parse
 from datetime import datetime, timedelta, timezone
 
 
@@ -329,12 +330,96 @@ def test_antigravity_profile_matches_official_auth_endpoint_and_omits_secret(mon
     from agent import google_oauth
 
     original_endpoint = getattr(google_oauth, "AUTH_ENDPOINT", "")
+    original_callback_path = google_oauth.CALLBACK_PATH
     monkeypatch.delenv("HERMES_ANTIGRAVITY_USE_CLIENT_SECRET", raising=False)
     monkeypatch.setattr(oauth, "ANTIGRAVITY_CLIENT_ID", "1071006060591-client.apps.googleusercontent.com")
     monkeypatch.setattr(oauth, "ANTIGRAVITY_CLIENT_SECRET", "GOCSPX-full-secret")
 
     with oauth._antigravity_profile():
         assert google_oauth.AUTH_ENDPOINT == "https://accounts.google.com/o/oauth2/auth"
+        assert google_oauth.CALLBACK_PATH == "/auth/callback"
         assert google_oauth._DEFAULT_CLIENT_SECRET == ""
 
     assert google_oauth.AUTH_ENDPOINT == original_endpoint
+    assert google_oauth.CALLBACK_PATH == original_callback_path
+
+
+def test_antigravity_auth_url_matches_agy_login_flow():
+    from agent import google_antigravity_oauth as oauth
+
+    url = oauth._build_antigravity_auth_url(
+        client_id="1071006060591-client.apps.googleusercontent.com",
+        code_challenge="challenge",
+        state="state",
+    )
+    parsed = urllib.parse.urlparse(url)
+    params = urllib.parse.parse_qs(parsed.query)
+
+    assert f"{parsed.scheme}://{parsed.netloc}{parsed.path}" == (
+        "https://accounts.google.com/o/oauth2/auth"
+    )
+    assert params["access_type"] == ["offline"]
+    assert params["client_id"] == ["1071006060591-client.apps.googleusercontent.com"]
+    assert params["code_challenge"] == ["challenge"]
+    assert params["code_challenge_method"] == ["S256"]
+    assert params["prompt"] == ["consent"]
+    assert params["redirect_uri"] == ["https://antigravity.google/oauth-callback"]
+    assert params["response_type"] == ["code"]
+    assert params["scope"] == [
+        (
+            "https://www.googleapis.com/auth/cloud-platform "
+            "https://www.googleapis.com/auth/userinfo.email "
+            "https://www.googleapis.com/auth/userinfo.profile "
+            "https://www.googleapis.com/auth/cclog "
+            "https://www.googleapis.com/auth/experimentsandconfigs "
+            "openid"
+        )
+    ]
+    assert params["state"] == ["state"]
+    assert parsed.fragment == ""
+
+
+def test_antigravity_authorization_code_parser_validates_state():
+    from agent import google_antigravity_oauth as oauth
+
+    callback = (
+        "https://antigravity.google/oauth-callback?"
+        "code=auth-code&state=expected-state"
+    )
+
+    assert oauth._extract_authorization_code(
+        callback,
+        expected_state="expected-state",
+    ) == "auth-code"
+    assert oauth._extract_authorization_code(
+        "code=query-code&state=expected-state",
+        expected_state="expected-state",
+    ) == "query-code"
+
+    try:
+        oauth._extract_authorization_code(callback, expected_state="other-state")
+    except oauth.GoogleOAuthError as exc:
+        assert exc.code == "google_oauth_state_mismatch"
+    else:
+        raise AssertionError("state mismatch should fail")
+
+
+def test_antigravity_agy_refresh_uses_prompt_argument(monkeypatch):
+    from subprocess import CompletedProcess
+    from agent import google_antigravity_oauth as oauth
+
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return CompletedProcess(cmd, 0, stdout="OK\n", stderr="")
+
+    monkeypatch.setattr(oauth.subprocess, "run", fake_run)
+
+    assert oauth._refresh_token_via_agy_cli()
+    assert calls == [
+        (
+            ["agy", "--prompt", "OK", "--print-timeout", "30s"],
+            {"capture_output": True, "text": True, "timeout": 60},
+        )
+    ]

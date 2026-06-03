@@ -16,9 +16,11 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import secrets
 import subprocess
 import threading
 import time
+import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterator, Optional
@@ -177,11 +179,13 @@ ANTIGRAVITY_SCOPES = (
     "https://www.googleapis.com/auth/userinfo.profile "
     "https://www.googleapis.com/auth/cclog "
     "https://www.googleapis.com/auth/experimentsandconfigs "
-    "https://www.googleapis.com/auth/aicode"
+    "openid"
 )
 ANTIGRAVITY_AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/auth"
+ANTIGRAVITY_REDIRECT_URI = "https://antigravity.google/oauth-callback"
+ANTIGRAVITY_AUTH_WAIT_SECONDS = 30.0
 ANTIGRAVITY_REDIRECT_PORT = 51121
-ANTIGRAVITY_CALLBACK_PATH = "/oauth-callback"
+ANTIGRAVITY_CALLBACK_PATH = "/auth/callback"
 # Do not hard-code a fallback project: Antigravity assigns account-specific
 # Cloud Code projects. We discover and persist the account's project after
 # OAuth via loadCodeAssist instead of reusing a stale project from another login.
@@ -466,12 +470,91 @@ def _refresh_token_via_agy_cli() -> bool:
     """
     try:
         subprocess.run(
-            ["agy", "--print", "OK", "--print-timeout", "30s"],
+            ["agy", "--prompt", "OK", "--print-timeout", "30s"],
             capture_output=True, text=True, timeout=60,
         )
         return True
     except Exception:
         return False
+
+
+def _build_antigravity_auth_url(
+    *,
+    client_id: str,
+    code_challenge: str,
+    state: str,
+) -> str:
+    """Build the browser login URL to match the agy CLI flow."""
+    params = [
+        ("access_type", "offline"),
+        ("client_id", client_id),
+        ("code_challenge", code_challenge),
+        ("code_challenge_method", "S256"),
+        ("prompt", "consent"),
+        ("redirect_uri", ANTIGRAVITY_REDIRECT_URI),
+        ("response_type", "code"),
+        ("scope", ANTIGRAVITY_SCOPES),
+        ("state", state),
+    ]
+    return ANTIGRAVITY_AUTH_ENDPOINT + "?" + urllib.parse.urlencode(params)
+
+
+def _extract_authorization_code(raw: str, *, expected_state: str) -> str:
+    text = raw.strip()
+    if not text:
+        return ""
+
+    params: dict[str, list[str]] = {}
+    if text.startswith("http://") or text.startswith("https://"):
+        parsed = urllib.parse.urlparse(text)
+        params = urllib.parse.parse_qs(parsed.query)
+        fragment_params = urllib.parse.parse_qs(parsed.fragment)
+        for key, value in fragment_params.items():
+            params.setdefault(key, value)
+    elif text.startswith("?"):
+        params = urllib.parse.parse_qs(text[1:])
+    elif "code=" in text or "error=" in text:
+        params = urllib.parse.parse_qs(text.lstrip("?"))
+
+    if params:
+        error = (params.get("error") or [""])[0]
+        if error:
+            raise GoogleOAuthError(
+                f"Authorization failed: {error}",
+                code="google_oauth_authorization_failed",
+            )
+        state = (params.get("state") or [""])[0]
+        if state and state != expected_state:
+            raise GoogleOAuthError(
+                "Authorization failed: state mismatch.",
+                code="google_oauth_state_mismatch",
+            )
+        return (params.get("code") or [""])[0].strip()
+
+    return text
+
+
+def _read_authorization_code(timeout_seconds: float) -> str:
+    prompt = "Authorization code or callback URL: "
+    try:
+        import select
+        import sys
+
+        if sys.stdin.isatty():
+            print(prompt, end="", flush=True)
+            ready, _, _ = select.select([sys.stdin], [], [], max(0.0, timeout_seconds))
+            if not ready:
+                print()
+                raise GoogleOAuthError(
+                    "Authentication timed out.",
+                    code="google_oauth_timeout",
+                )
+            return sys.stdin.readline().strip()
+    except GoogleOAuthError:
+        raise
+    except Exception:
+        pass
+    return input(prompt)
 
 
 def get_valid_access_token(*, force_refresh: bool = False) -> str:
@@ -517,7 +600,7 @@ def start_oauth_flow(
     *,
     force_relogin: bool = False,
     open_browser: bool = True,
-    callback_wait_seconds: float = google_oauth.CALLBACK_WAIT_SECONDS,
+    callback_wait_seconds: float = ANTIGRAVITY_AUTH_WAIT_SECONDS,
     project_id: str = "",
 ) -> GoogleCredentials:
     if not project_id:
@@ -526,12 +609,53 @@ def start_oauth_flow(
     print("⚠️  Google Antigravity OAuth is unofficial. It may violate Google/Antigravity terms")
     print("   or cause account/API access issues. Continue only if you accept that risk.")
     with _antigravity_profile():
-        creds = google_oauth.start_oauth_flow(
-            force_relogin=force_relogin,
-            open_browser=open_browser,
-            callback_wait_seconds=callback_wait_seconds,
-            project_id=project_id,
+        if not force_relogin:
+            existing = google_oauth.load_credentials()
+            if existing and existing.access_token:
+                return existing
+
+        client_id = google_oauth._require_client_id()
+        client_secret = _get_client_secret()
+        verifier, challenge = google_oauth._generate_pkce_pair()
+        state = secrets.token_urlsafe(16)
+        auth_url = _build_antigravity_auth_url(
+            client_id=client_id,
+            code_challenge=challenge,
+            state=state,
         )
+
+        print()
+        print("Authentication required. Please visit the URL to log in:")
+        print(f"  {auth_url}")
+        print()
+        print(f"Waiting for authentication (timeout {int(callback_wait_seconds)}s)...")
+        print("Or, paste the authorization code here and press Enter:")
+        print()
+
+        if open_browser:
+            try:
+                import webbrowser
+
+                webbrowser.open(auth_url, new=1, autoraise=True)
+            except Exception:
+                pass
+
+        raw_code = _read_authorization_code(callback_wait_seconds)
+        code = _extract_authorization_code(raw_code, expected_state=state)
+        if not code:
+            raise GoogleOAuthError(
+                "No authorization code provided.",
+                code="google_oauth_no_code",
+            )
+
+        token_resp = google_oauth.exchange_code(
+            code,
+            verifier,
+            ANTIGRAVITY_REDIRECT_URI,
+            client_id=client_id,
+            client_secret=client_secret,
+        )
+        creds = google_oauth._persist_token_response(token_resp, project_id=project_id)
     _mirror_credentials_to_cli(creds)
     if not project_id:
         try:

@@ -197,15 +197,16 @@ if $CHECK_ONLY; then
     # File-existence alone does not catch the case where a runtime hotfix
     # was applied to the installed copy but never synced back to the repo
     # (or vice-versa). Compare byte-for-byte and warn on any drift.
-    declare -A DRIFT_PAIRS=(
-        ["$PATCHES_DIR/antigravity_provider_patch.py"]="$REPO_ROOT/patches/antigravity_provider_patch.py"
-        ["$HERMES_AGENT_DIR/agent/google_antigravity_adapter.py"]="$REPO_ROOT/agent/google_antigravity_adapter.py"
-        ["$HERMES_AGENT_DIR/agent/google_antigravity_oauth.py"]="$REPO_ROOT/agent/google_antigravity_oauth.py"
-        ["$HERMES_AGENT_DIR/agent/antigravity_quota_grpc.py"]="$REPO_ROOT/agent/antigravity_quota_grpc.py"
-        ["$HERMES_AGENT_DIR/agent/antigravity_stream_grpc.py"]="$REPO_ROOT/agent/antigravity_stream_grpc.py"
+    DRIFT_PAIRS=(
+        "$PATCHES_DIR/antigravity_provider_patch.py|$REPO_ROOT/patches/antigravity_provider_patch.py"
+        "$HERMES_AGENT_DIR/agent/google_antigravity_adapter.py|$REPO_ROOT/agent/google_antigravity_adapter.py"
+        "$HERMES_AGENT_DIR/agent/google_antigravity_oauth.py|$REPO_ROOT/agent/google_antigravity_oauth.py"
+        "$HERMES_AGENT_DIR/agent/antigravity_quota_grpc.py|$REPO_ROOT/agent/antigravity_quota_grpc.py"
+        "$HERMES_AGENT_DIR/agent/antigravity_stream_grpc.py|$REPO_ROOT/agent/antigravity_stream_grpc.py"
     )
-    for installed in "${!DRIFT_PAIRS[@]}"; do
-        repo="${DRIFT_PAIRS[$installed]}"
+    for pair in "${DRIFT_PAIRS[@]}"; do
+        installed="${pair%%|*}"
+        repo="${pair#*|}"
         if [[ -f "$installed" && -f "$repo" ]]; then
             if ! cmp -s "$installed" "$repo"; then
                 printf "${YELLOW}[!] DRIFT: %s differs from repo (%s)${RESET}\n" \
