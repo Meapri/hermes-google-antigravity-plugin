@@ -107,6 +107,9 @@ After repair, verify and report:
 - the Hermes venv `sitecustomize.py` exists and contains these hooks:
   `hermes_cli.auth`, `hermes_cli.providers`, `hermes_cli.runtime_provider`,
   `agent.auxiliary_client`, `hermes_cli.model_switch`, and `api.config`.
+- `./scripts/plan_status.py` reports the expected paid tier. For Google AI
+  Plus/Pro/Ultra accounts, `raw_paid_tier_id` or `context_paid_tier_id` should
+  be a `g1-*` tier and `credit_attempts` should include `True`.
 - installed files match the repo:
   `~/.hermes/patches/antigravity_provider_patch.py`,
   `~/.hermes/hermes-agent/agent/google_antigravity_adapter.py`,
@@ -133,6 +136,47 @@ hermes config set model.default gemini-3.5-flash-high
 ```
 
 Provider aliases: `google-antigravity`, `antigravity`, `antigravity-oauth`
+
+### Google AI Plus/Pro/Ultra Plan Routing
+
+This provider reuses the OAuth token produced by the official `agy` CLI. On
+each client startup it probes `loadCodeAssist` to discover the assigned project
+and account tier. Google can report Google One paid plans in the raw
+`paidTier` field even when Hermes' older `google_code_assist.py` parser only
+exposes `current_tier_id=standard-tier`; the adapter reads that raw `paidTier`
+so Plus/Pro/Ultra accounts still opt into Google One AI credit routing.
+
+Default credit mode is `auto`:
+
+- paid Google One tier detected (`g1-plus`, `g1-pro`, `g1-ultra`, or matching
+  plan name): request bodies use `enabledCreditTypes=["GOOGLE_ONE_AI"]`
+- no paid tier detected: request bodies use the base Code Assist bucket
+
+Override with `HERMES_ANTIGRAVITY_GOOGLE_ONE_AI_CREDITS`:
+
+| Value | Behavior |
+|-------|----------|
+| `auto` / unset | Use Google One AI credits only when a paid tier is detected |
+| `always` / `1` / `true` | Always request Google One AI credit routing |
+| `fallback` | Try base quota first, then Google One AI credits on capacity errors |
+| `never` / `0` / `false` | Never request Google One AI credit routing |
+
+Check the current account without printing tokens:
+
+```bash
+cd ~/hermes-google-antigravity-plugin
+./scripts/plan_status.py
+```
+
+For an Ultra account, expect output like:
+
+```text
+raw_paid_tier_id: g1-ultra-tier
+context_paid_tier_id: g1-ultra-tier
+context_has_google_one_ai_credits: True
+credit_mode: auto
+credit_attempts: [True]
+```
 
 ### TUI Model Picker (`hermes model`)
 
@@ -380,6 +424,11 @@ systemctl --user restart hermes-gateway
 **google-antigravity not in `hermes model` list** — the TUI picker patch may have been declined due to Hermes API changes. Run `hermes config set model.provider google-antigravity` as a workaround.
 
 **Token refresh fails** — make sure `agy` is on PATH and logged in. Run `agy --print "OK"` manually to verify.
+
+**Google AI Plus/Pro/Ultra is not being used** — run `./scripts/plan_status.py`.
+If `raw_paid_tier_id` is empty, Google did not report a paid tier for the `agy`
+account/session. If `raw_paid_tier_id` is `g1-*` but `credit_attempts` does not
+include `True`, run `./scripts/repair.sh` to reinstall the latest adapter.
 
 **"invalid_client" on fresh login** — the OAuth client credentials extracted from your `agy` binary may be outdated. Update `agy` to the latest version and reinstall the plugin.
 
