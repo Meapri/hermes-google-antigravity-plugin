@@ -466,7 +466,7 @@ def _refresh_token_via_agy_cli() -> bool:
 
     The client_secret extracted from the agy binary may not match the one
     Google expects for token refresh (binary can be stale or secrets rotated).
-    agy manages its own secrets internally, so running ``agy --print "OK"``
+    agy manages its own secrets internally, so running ``agy --prompt "OK"``
     forces agy to refresh the token with its correct credentials, which we
     then re-read from the token file.
 
@@ -633,7 +633,10 @@ def start_oauth_flow(
         print(f"  {auth_url}")
         print()
         print(f"Waiting for authentication (timeout {int(callback_wait_seconds)}s)...")
-        print("Or, paste the authorization code here and press Enter:")
+        print(
+            "After browser login, paste the one-time authorization code "
+            "or full callback URL here and press Enter:"
+        )
         print()
 
         if open_browser:
