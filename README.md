@@ -66,6 +66,45 @@ When the token expires it is auto-refreshed via `agy --print`.
 
 If you already have `hermes-claude-auth` installed, the `sitecustomize.py` hook handles both patches side by side.
 
+## Agent Handoff Prompt
+
+Paste this into another Hermes/Codex agent when you want it to install or
+refresh this provider on that machine:
+
+```text
+Install or refresh the Hermes Google Antigravity provider from
+https://github.com/Meapri/hermes-google-antigravity-plugin.
+
+Use a persistent clone at ~/hermes-google-antigravity-plugin. If the clone
+exists, fetch/pull it with --ff-only. If it does not exist, clone it there.
+Then run ./scripts/install.sh for a first install, or ./scripts/install.sh
+--post-update when Hermes was just updated. Run ./scripts/install.sh --check
+afterward and report the result.
+
+Do not run `hermes auth add google-antigravity`; this provider uses the
+existing Antigravity CLI (`agy`) OAuth token. First verify that Hermes Agent is
+installed, `agy` is installed and logged in, and a Hermes virtualenv exists.
+
+After installation, verify these files exist:
+- ~/.hermes/patches/antigravity_provider_patch.py
+- ~/.hermes/hermes-agent/agent/google_antigravity_adapter.py
+- ~/.hermes/hermes-agent/agent/google_antigravity_oauth.py
+- ~/.hermes/plugins/model-providers/google-antigravity/plugin.yaml
+- the Hermes venv site-packages/sitecustomize.py
+
+Also verify sitecustomize.py contains the google-antigravity hooks, especially
+`hermes_cli.auth`, `hermes_cli.providers`, `hermes_cli.runtime_provider`,
+`agent.auxiliary_client`, `hermes_cli.model_switch`, and `api.config`.
+
+If credentials are available, run this smoke test:
+hermes chat --provider google-antigravity -m gemini-3.5-flash-high -q "OK"
+
+If the smoke test cannot be run because credentials, network, or a gateway
+service are unavailable, say exactly what blocked it. Do not edit Hermes source
+files directly; this plugin installs copied runtime files and a sitecustomize
+import hook.
+```
+
 ## Usage
 
 ```bash
