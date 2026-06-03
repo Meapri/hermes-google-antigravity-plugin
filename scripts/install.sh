@@ -165,7 +165,8 @@ write_cache({
 })
 print(
     f"[✓] Primed Antigravity OAuth client cache: {cache} "
-    f"(id_prefix={client_id[:12]}, secret_len={len(client_secret)})"
+    f"(id_prefix={client_id[:12]}, secret_len={len(client_secret)}, "
+    "secret_not_sent_by_default)"
 )
 PY
 }

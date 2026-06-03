@@ -38,9 +38,15 @@ MARKER_BASE_URL = "cloudcode-pa://antigravity"
 # Override via environment variables if needed:
 #   HERMES_ANTIGRAVITY_CLIENT_ID
 #   HERMES_ANTIGRAVITY_CLIENT_SECRET
+#   HERMES_ANTIGRAVITY_USE_CLIENT_SECRET=1
 ANTIGRAVITY_CLIENT_ID = ""
 ANTIGRAVITY_CLIENT_SECRET = ""
 _CLIENT_CACHE_EXTRACTOR_VERSION = 2
+
+
+def _use_client_secret() -> bool:
+    value = os.getenv("HERMES_ANTIGRAVITY_USE_CLIENT_SECRET", "").strip().lower()
+    return value in {"1", "true", "yes", "on"}
 
 
 def _client_cache_path() -> Path:
@@ -50,12 +56,13 @@ def _client_cache_path() -> Path:
 def _load_client_from_env_or_cache() -> bool:
     """Load OAuth client credentials without touching the large agy binary."""
     global ANTIGRAVITY_CLIENT_ID, ANTIGRAVITY_CLIENT_SECRET
-    if ANTIGRAVITY_CLIENT_ID and ANTIGRAVITY_CLIENT_SECRET:
+    secret_required = _use_client_secret()
+    if ANTIGRAVITY_CLIENT_ID and (ANTIGRAVITY_CLIENT_SECRET or not secret_required):
         return True
 
     env_id = os.getenv("HERMES_ANTIGRAVITY_CLIENT_ID", "").strip()
     env_secret = os.getenv("HERMES_ANTIGRAVITY_CLIENT_SECRET", "").strip()
-    if env_id and env_secret:
+    if env_id and (env_secret or not secret_required):
         ANTIGRAVITY_CLIENT_ID = env_id
         ANTIGRAVITY_CLIENT_SECRET = env_secret
         return True
@@ -69,7 +76,7 @@ def _load_client_from_env_or_cache() -> bool:
     extractor_version = int(data.get("extractor_version", 0) or 0)
     if extractor_version < _CLIENT_CACHE_EXTRACTOR_VERSION:
         return False
-    if cache_id and cache_secret:
+    if cache_id and (cache_secret or not secret_required):
         ANTIGRAVITY_CLIENT_ID = cache_id
         ANTIGRAVITY_CLIENT_SECRET = cache_secret
         return True
@@ -156,6 +163,11 @@ def _get_client_id():
 
 
 def _get_client_secret():
+    # Google's PKCE browser flow for this Antigravity client rejects the
+    # embedded agy secret on some builds with invalid_client. Do not send a
+    # client_secret by default; allow an explicit env opt-in for legacy cases.
+    if not _use_client_secret():
+        return ""
     if not _load_client_from_env_or_cache():
         _extract_from_agy_binary()
     return ANTIGRAVITY_CLIENT_SECRET
@@ -167,6 +179,7 @@ ANTIGRAVITY_SCOPES = (
     "https://www.googleapis.com/auth/experimentsandconfigs "
     "https://www.googleapis.com/auth/aicode"
 )
+ANTIGRAVITY_AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/auth"
 ANTIGRAVITY_REDIRECT_PORT = 51121
 ANTIGRAVITY_CALLBACK_PATH = "/oauth-callback"
 # Do not hard-code a fallback project: Antigravity assigns account-specific
@@ -224,6 +237,7 @@ def _antigravity_profile() -> Iterator[None]:
             "_DEFAULT_CLIENT_ID": google_oauth._DEFAULT_CLIENT_ID,
             "_DEFAULT_CLIENT_SECRET": google_oauth._DEFAULT_CLIENT_SECRET,
             "OAUTH_SCOPES": google_oauth.OAUTH_SCOPES,
+            "AUTH_ENDPOINT": getattr(google_oauth, "AUTH_ENDPOINT", None),
             "DEFAULT_REDIRECT_PORT": google_oauth.DEFAULT_REDIRECT_PORT,
             "REDIRECT_HOST": google_oauth.REDIRECT_HOST,
             "CALLBACK_PATH": google_oauth.CALLBACK_PATH,
@@ -236,6 +250,8 @@ def _antigravity_profile() -> Iterator[None]:
             google_oauth._DEFAULT_CLIENT_ID = _get_client_id()
             google_oauth._DEFAULT_CLIENT_SECRET = _get_client_secret()
             google_oauth.OAUTH_SCOPES = ANTIGRAVITY_SCOPES
+            if hasattr(google_oauth, "AUTH_ENDPOINT"):
+                google_oauth.AUTH_ENDPOINT = ANTIGRAVITY_AUTH_ENDPOINT
             google_oauth.DEFAULT_REDIRECT_PORT = ANTIGRAVITY_REDIRECT_PORT
             google_oauth.REDIRECT_HOST = "localhost"
             google_oauth.CALLBACK_PATH = ANTIGRAVITY_CALLBACK_PATH

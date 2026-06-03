@@ -265,3 +265,76 @@ def test_antigravity_rejects_old_client_cache(tmp_path, monkeypatch):
         assert not oauth._load_client_from_env_or_cache()
     finally:
         reset_hermes_home_override(token)
+
+
+def test_antigravity_does_not_send_client_secret_by_default(tmp_path, monkeypatch):
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from agent import google_antigravity_oauth as oauth
+
+    hermes_home = tmp_path / "hermes"
+    cache = hermes_home / "auth" / "google_antigravity_client.json"
+    cache.parent.mkdir(parents=True)
+    cache.write_text(
+        json.dumps(
+            {
+                "client_id": "1071006060591-client.apps.googleusercontent.com",
+                "client_secret": "GOCSPX-full-secret",
+                "extractor_version": 2,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.delenv("HERMES_ANTIGRAVITY_USE_CLIENT_SECRET", raising=False)
+    monkeypatch.setattr(oauth, "ANTIGRAVITY_CLIENT_ID", "")
+    monkeypatch.setattr(oauth, "ANTIGRAVITY_CLIENT_SECRET", "")
+    token = set_hermes_home_override(hermes_home)
+    try:
+        assert oauth._get_client_id() == "1071006060591-client.apps.googleusercontent.com"
+        assert oauth._get_client_secret() == ""
+    finally:
+        reset_hermes_home_override(token)
+
+
+def test_antigravity_can_opt_in_to_client_secret(tmp_path, monkeypatch):
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from agent import google_antigravity_oauth as oauth
+
+    hermes_home = tmp_path / "hermes"
+    cache = hermes_home / "auth" / "google_antigravity_client.json"
+    cache.parent.mkdir(parents=True)
+    cache.write_text(
+        json.dumps(
+            {
+                "client_id": "1071006060591-client.apps.googleusercontent.com",
+                "client_secret": "GOCSPX-full-secret",
+                "extractor_version": 2,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_ANTIGRAVITY_USE_CLIENT_SECRET", "1")
+    monkeypatch.setattr(oauth, "ANTIGRAVITY_CLIENT_ID", "")
+    monkeypatch.setattr(oauth, "ANTIGRAVITY_CLIENT_SECRET", "")
+    token = set_hermes_home_override(hermes_home)
+    try:
+        assert oauth._get_client_secret() == "GOCSPX-full-secret"
+    finally:
+        reset_hermes_home_override(token)
+
+
+def test_antigravity_profile_matches_official_auth_endpoint_and_omits_secret(monkeypatch):
+    from agent import google_antigravity_oauth as oauth
+    from agent import google_oauth
+
+    original_endpoint = getattr(google_oauth, "AUTH_ENDPOINT", "")
+    monkeypatch.delenv("HERMES_ANTIGRAVITY_USE_CLIENT_SECRET", raising=False)
+    monkeypatch.setattr(oauth, "ANTIGRAVITY_CLIENT_ID", "1071006060591-client.apps.googleusercontent.com")
+    monkeypatch.setattr(oauth, "ANTIGRAVITY_CLIENT_SECRET", "GOCSPX-full-secret")
+
+    with oauth._antigravity_profile():
+        assert google_oauth.AUTH_ENDPOINT == "https://accounts.google.com/o/oauth2/auth"
+        assert google_oauth._DEFAULT_CLIENT_SECRET == ""
+
+    assert google_oauth.AUTH_ENDPOINT == original_endpoint

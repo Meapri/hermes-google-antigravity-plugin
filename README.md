@@ -69,6 +69,10 @@ The login opens the browser and stores Antigravity-scoped Google OAuth
 credentials at `~/.hermes/auth/google_antigravity.json`. If a compatible `agy`
 CLI OAuth token file exists at `~/.gemini/antigravity-cli/antigravity-oauth-token`,
 the provider can still import it, but that path is optional.
+The browser flow uses the same legacy Google auth endpoint string found in the
+official `agy` binary (`https://accounts.google.com/o/oauth2/auth`) and omits
+`client_secret` by default, matching the public PKCE flow that avoids
+`invalid_client` failures from stale embedded secrets.
 
 You can also start the same browser login from `hermes model`: choose
 Google Antigravity, and if no token is present the model picker opens Google
@@ -512,8 +516,10 @@ spend.
 **"invalid_client" on fresh login** — the cached OAuth client secret is stale
 or was extracted incorrectly. Pull the latest plugin and run
 `./scripts/repair.sh --skip-pull`; the installer will regenerate
-`~/.hermes/auth/google_antigravity_client.json` with extractor version 2. If it
-still fails, update `agy` and run repair again.
+`~/.hermes/auth/google_antigravity_client.json` with extractor version 2, but
+the login flow no longer sends `client_secret` by default. If it still fails,
+update `agy` and run repair again. Only opt back into secret sending with
+`HERMES_ANTIGRAVITY_USE_CLIENT_SECRET=1` for deliberate legacy testing.
 
 **Reinstall** — run `./scripts/repair.sh`. It refreshes the clone when safe, overwrites installed files, restarts the gateway when running, and verifies contracts.
 
