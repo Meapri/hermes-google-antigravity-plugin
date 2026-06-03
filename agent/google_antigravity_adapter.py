@@ -126,6 +126,11 @@ ANTIGRAVITY_REASONING_MIN_OUTPUT_TOKENS = 256
 ANTIGRAVITY_SYSTEM_INSTRUCTION = (
     "Use absolute file paths for filesystem tool arguments."
 )
+ANTIGRAVITY_GOOGLE_GROUNDING_HINT = (
+    "Google Search grounding is enabled for this request. Use grounded search "
+    "results for current facts, separate verified facts from inference, and "
+    "include source URLs when they materially help verification."
+)
 GPT_OSS_TOOL_PROTOCOL_HINT = (
     "Use the provided function-calling protocol for tools. Do not emit Harmony "
     "channel tokens such as <|start|>, <|channel|>, <|message|>, or <|call|> "
@@ -145,6 +150,77 @@ def _is_claude_model(model: str) -> bool:
 def _is_claude_thinking_model(model: str) -> bool:
     lower = str(model or "").lower()
     return "claude" in lower and "thinking" in lower
+
+def _is_gemini_model(model: str) -> bool:
+    return "gemini" in str(model or "").lower()
+
+def _env_truthy(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on", "enabled"}
+
+def _antigravity_google_grounding_mode() -> str:
+    """Return google_search grounding mode for Antigravity Gemini requests."""
+
+    explicit = os.getenv("HERMES_ANTIGRAVITY_GOOGLE_GROUNDING", "").strip().lower()
+    if explicit in {"0", "false", "no", "off", "never", "disabled"}:
+        return "off"
+    if explicit in {"1", "true", "yes", "on", "always", "force"}:
+        return "always"
+    if explicit in {"auto", "smart", "detect", "detected"}:
+        return "auto"
+    if _env_truthy("HERMES_GOOGLE_GROUNDING_SEARCH_ENABLED", False):
+        return "auto"
+    return "off"
+
+def _request_text_for_grounding_detection(request: Dict[str, Any]) -> str:
+    contents = request.get("contents")
+    if not isinstance(contents, list):
+        return ""
+    texts: List[str] = []
+    for turn in contents[-6:]:
+        if not isinstance(turn, dict):
+            continue
+        parts = turn.get("parts")
+        if not isinstance(parts, list):
+            continue
+        for part in parts:
+            if isinstance(part, dict) and isinstance(part.get("text"), str):
+                texts.append(part["text"])
+    return "\n".join(texts)
+
+def _request_wants_google_grounding(request: Dict[str, Any]) -> bool:
+    text = _request_text_for_grounding_detection(request).lower()
+    if not text.strip():
+        return False
+    markers = (
+        "검색", "찾아", "찾아봐", "자료수집", "출처", "근거", "최신", "오늘", "지금",
+        "요즘", "최근", "뉴스", "가격", "시세", "환율", "일정", "날씨", "공식",
+        "확인해", "팩트체크", "web search", "google search", "search the web",
+        "browse", "latest", "current", "today", "news", "source", "sources",
+        "citation", "citations", "verify", "fact check",
+    )
+    return any(marker in text for marker in markers)
+
+def _has_google_search_tool(request: Dict[str, Any]) -> bool:
+    tools = request.get("tools")
+    if not isinstance(tools, list):
+        return False
+    return any(isinstance(tool, dict) and isinstance(tool.get("google_search"), dict) for tool in tools)
+
+def _maybe_enable_google_grounding(request: Dict[str, Any], *, model: str) -> None:
+    mode = _antigravity_google_grounding_mode()
+    if mode == "off" or not _is_gemini_model(model):
+        return
+    if mode != "always" and not _request_wants_google_grounding(request):
+        return
+    tools = request.setdefault("tools", [])
+    if not isinstance(tools, list):
+        return
+    if not _has_google_search_tool(request):
+        tools.append({"google_search": {}})
+    _append_system_text(request, ANTIGRAVITY_GOOGLE_GROUNDING_HINT)
 
 def _normalize_claude_schema(schema: Any) -> Dict[str, Any]:
     def simplify(value: Any) -> Any:
@@ -579,6 +655,7 @@ def _apply_antigravity_request_transforms(request: Dict[str, Any], *, model: str
         _normalize_gpt_oss_tools(request)
         if isinstance(request.get("tools"), list) and request["tools"]:
             _append_system_text(request, GPT_OSS_TOOL_PROTOCOL_HINT)
+    _maybe_enable_google_grounding(request, model=model)
     _append_system_text(request, ANTIGRAVITY_SYSTEM_INSTRUCTION, prepend=True, role="user")
     inject_context_compression(request, model=model)
     request["sessionId"] = str(request.get("sessionId") or f"-{uuid.uuid4()}")

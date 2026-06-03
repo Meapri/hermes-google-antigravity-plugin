@@ -143,6 +143,11 @@ After repair, verify and report:
   Plus/Pro/Ultra accounts, `raw_paid_tier_id` or `context_paid_tier_id` should
   be a `g1-*` tier. `credit_attempts` shows whether requests will include
   `GOOGLE_ONE_AI` routing; it is separate from the base plan quota report.
+- Optional Google Search grounding is controlled by
+  `HERMES_GOOGLE_GROUNDING_SEARCH_ENABLED=true` or
+  `HERMES_ANTIGRAVITY_GOOGLE_GROUNDING=auto|always|off`. In auto mode, Gemini
+  requests with search/currentness intent receive native
+  `tools: [{"google_search": {}}]`; Claude/GPT-OSS requests are not modified.
 - installed files match the repo:
   `~/.hermes/patches/antigravity_provider_patch.py`,
   `~/.hermes/hermes-agent/agent/google_antigravity_adapter.py`,
@@ -170,6 +175,44 @@ hermes config set model.default gemini-3.5-flash-high
 ```
 
 Provider aliases: `google-antigravity`, `antigravity`, `antigravity-oauth`
+
+### Google Search Grounding
+
+The provider can attach Antigravity/Gemini native Google Search grounding to
+Gemini requests. This is not a Hermes web toolset; it adds
+`tools: [{"google_search": {}}]` to the wrapped Cloud Code PA request so the
+backend can ground the answer with Google Search results.
+
+Default behavior is conservative:
+
+- disabled unless `HERMES_GOOGLE_GROUNDING_SEARCH_ENABLED=true` or
+  `HERMES_ANTIGRAVITY_GOOGLE_GROUNDING` is set
+- when enabled, `auto` mode only attaches grounding to Gemini requests whose
+  recent user text looks search/currentness sensitive (`검색`, `최신`, `출처`,
+  `latest`, `current`, `news`, `verify`, etc.)
+- Claude and GPT-OSS Antigravity models are skipped by default because native
+  Gemini `google_search` support is model/backend specific
+
+Configure it with:
+
+| Variable | Values | Behavior |
+|----------|--------|----------|
+| `HERMES_GOOGLE_GROUNDING_SEARCH_ENABLED` | `true` / `false` | Compatibility flag used by Kakao bridge and this provider; `true` maps to auto mode |
+| `HERMES_ANTIGRAVITY_GOOGLE_GROUNDING` | `auto` | Attach Google Search grounding only for search/currentness-like Gemini prompts |
+| `HERMES_ANTIGRAVITY_GOOGLE_GROUNDING` | `always` / `1` / `true` | Attach Google Search grounding to every Gemini request |
+| `HERMES_ANTIGRAVITY_GOOGLE_GROUNDING` | `off` / `0` / `false` | Never attach Google Search grounding |
+
+Example:
+
+```bash
+export HERMES_GOOGLE_GROUNDING_SEARCH_ENABLED=true
+hermes chat --provider google-antigravity -m gemini-3.5-flash-high \
+  -q "오늘 기준 Gemini 최신 소식 검색해서 출처와 같이 요약해줘"
+```
+
+Grounding and Google One AI credit routing are independent. Grounding controls
+whether the model can use Google Search results; `enabledCreditTypes` controls
+paid-plan/credit routing for eligible requests.
 
 ### Google AI Plus/Pro/Ultra Plan And Quota Routing
 

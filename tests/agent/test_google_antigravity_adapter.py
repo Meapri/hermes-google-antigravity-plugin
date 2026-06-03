@@ -330,6 +330,73 @@ def test_antigravity_transform_preserves_stable_hermes_session_id():
     assert request["sessionId"] == session_id
 
 
+def test_google_grounding_auto_adds_google_search_for_current_gemini_requests(monkeypatch):
+    monkeypatch.delenv("HERMES_ANTIGRAVITY_GOOGLE_GROUNDING", raising=False)
+    monkeypatch.setenv("HERMES_GOOGLE_GROUNDING_SEARCH_ENABLED", "true")
+    request = {"contents": [{"role": "user", "parts": [{"text": "오늘 OpenAI 최신 뉴스 검색해서 출처도 알려줘"}]}]}
+
+    getattr(ag, "_apply_antigravity_request_transforms")(
+        request,
+        model="gemini-3.5-flash-high",
+    )
+
+    assert {"google_search": {}} in request["tools"]
+    assert getattr(ag, "ANTIGRAVITY_GOOGLE_GROUNDING_HINT") in request["systemInstruction"]["parts"][0]["text"]
+
+
+def test_google_grounding_auto_skips_non_search_gemini_requests(monkeypatch):
+    monkeypatch.delenv("HERMES_ANTIGRAVITY_GOOGLE_GROUNDING", raising=False)
+    monkeypatch.setenv("HERMES_GOOGLE_GROUNDING_SEARCH_ENABLED", "true")
+    request = {"contents": [{"role": "user", "parts": [{"text": "간단히 농담 하나 해줘"}]}]}
+
+    getattr(ag, "_apply_antigravity_request_transforms")(
+        request,
+        model="gemini-3.5-flash-high",
+    )
+
+    assert "tools" not in request
+
+
+def test_google_grounding_can_be_forced_or_disabled(monkeypatch):
+    monkeypatch.setenv("HERMES_ANTIGRAVITY_GOOGLE_GROUNDING", "always")
+    request = {"contents": [{"role": "user", "parts": [{"text": "hi"}]}]}
+
+    getattr(ag, "_apply_antigravity_request_transforms")(
+        request,
+        model="gemini-3.5-flash-high",
+    )
+
+    assert {"google_search": {}} in request["tools"]
+
+    monkeypatch.setenv("HERMES_ANTIGRAVITY_GOOGLE_GROUNDING", "off")
+    disabled = {"contents": [{"role": "user", "parts": [{"text": "최신 뉴스 검색해줘"}]}]}
+
+    getattr(ag, "_apply_antigravity_request_transforms")(
+        disabled,
+        model="gemini-3.5-flash-high",
+    )
+
+    assert "tools" not in disabled
+
+
+def test_google_grounding_does_not_attach_to_claude_or_gpt_models(monkeypatch):
+    monkeypatch.setenv("HERMES_ANTIGRAVITY_GOOGLE_GROUNDING", "always")
+    claude_request = {"contents": [{"role": "user", "parts": [{"text": "latest news"}]}]}
+    gpt_request = {"contents": [{"role": "user", "parts": [{"text": "latest news"}]}]}
+
+    getattr(ag, "_apply_antigravity_request_transforms")(
+        claude_request,
+        model="claude-opus-4-6-thinking",
+    )
+    getattr(ag, "_apply_antigravity_request_transforms")(
+        gpt_request,
+        model="gpt-oss-120b",
+    )
+
+    assert "tools" not in claude_request
+    assert "tools" not in gpt_request
+
+
 def test_claude_thinking_transform_sets_thinking_config_and_max_tokens():
     request = {
         "generationConfig": {"maxOutputTokens": 1024},
