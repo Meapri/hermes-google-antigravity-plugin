@@ -141,6 +141,23 @@ def check_sitecustomize(reporter: Reporter, repo_root: Path, venv_dir: Path) -> 
             reporter.fail(f"sitecustomize hook missing: {label}")
 
 
+def check_stale_antigravity_guidance(reporter: Reporter, hermes_home: Path) -> None:
+    installed_patch = hermes_home / "patches/antigravity_provider_patch.py"
+    if not installed_patch.exists():
+        return
+    text = installed_patch.read_text(encoding="utf-8", errors="replace")
+    stale_needles = [
+        "Run: hermes auth add google-antigravity",
+        'print("  Run: hermes auth add google-antigravity")',
+    ]
+    if any(needle in text for needle in stale_needles):
+        reporter.fail(
+            "installed patch still contains stale `hermes auth add google-antigravity` guidance"
+        )
+    else:
+        reporter.ok("installed patch has agy-token auth guidance")
+
+
 def check_import_contracts(
     reporter: Reporter,
     hermes_home: Path,
@@ -244,6 +261,7 @@ def main() -> int:
 
     check_files(reporter, repo_root, hermes_home, hermes_agent_dir)
     check_sitecustomize(reporter, repo_root, venv_dir)
+    check_stale_antigravity_guidance(reporter, hermes_home)
     check_import_contracts(reporter, hermes_home, hermes_agent_dir)
 
     if reporter.failed:

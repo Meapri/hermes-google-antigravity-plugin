@@ -110,6 +110,9 @@ After repair, verify and report:
   `hermes_cli.auth`, `hermes_cli.providers`, `hermes_cli.runtime_provider`,
   `hermes_cli.commands`, `cli`, `agent.auxiliary_client`,
   `hermes_cli.model_switch`, and `api.config`.
+- `~/.hermes/patches/antigravity_provider_patch.py` does not contain the stale
+  line `Run: hermes auth add google-antigravity`; if it does, the installed
+  patch is old and must be replaced from the latest repo.
 - `./scripts/plan_status.py` reports the expected paid tier. For Google AI
   Plus/Pro/Ultra accounts, `raw_paid_tier_id` or `context_paid_tier_id` should
   be a `g1-*` tier. `credit_attempts` shows whether requests will include
