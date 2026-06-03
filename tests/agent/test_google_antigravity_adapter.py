@@ -111,6 +111,37 @@ def test_google_one_ai_credit_mode_defaults_to_plan_detection(monkeypatch):
     assert getattr(ag, "_antigravity_credit_attempts")(free_ctx) == [False]
 
 
+def test_google_one_ai_entitlement_detects_raw_paid_tier_when_parser_is_older(monkeypatch):
+    monkeypatch.delenv("HERMES_ANTIGRAVITY_GOOGLE_ONE_AI_CREDITS", raising=False)
+    info = SimpleNamespace(
+        raw={
+            "currentTier": {"id": "standard-tier"},
+            "paidTier": {
+                "id": "g1-ultra-tier",
+                "name": "Gemini Code Assist in Google One AI Ultra",
+            },
+        }
+    )
+
+    paid_id, paid_name = getattr(ag, "_paid_tier_from_load_code_assist")(info)
+    credit_amount, minimum_credit_amount, has_credits = getattr(
+        ag, "_google_one_credit_fields_from_load_code_assist"
+    )(info, paid_id, paid_name)
+    ctx = ag.ProjectContext(
+        tier_id="standard-tier",
+        paid_tier_id=paid_id,
+        paid_tier_name=paid_name,
+        google_one_ai_credit_amount=credit_amount,
+        google_one_ai_minimum_credit_amount=minimum_credit_amount,
+        has_google_one_ai_credits=has_credits,
+    )
+
+    assert paid_id == "g1-ultra-tier"
+    assert "Ultra" in paid_name
+    assert has_credits is True
+    assert getattr(ag, "_antigravity_credit_attempts")(ctx) == [True]
+
+
 def test_google_one_ai_credit_mode_can_prefer_base_quota_or_disable(monkeypatch):
     monkeypatch.setenv("HERMES_ANTIGRAVITY_GOOGLE_ONE_AI_CREDITS", "fallback")
     assert getattr(ag, "_antigravity_credit_attempts")() == [False, True]

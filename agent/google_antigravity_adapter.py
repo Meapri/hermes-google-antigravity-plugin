@@ -613,6 +613,64 @@ def _context_has_google_one_ai_entitlement(ctx: Optional[ProjectContext]) -> boo
     return bool(tier and any(marker in tier for marker in ("google ai plus", "google ai pro", "google ai ultra", "g1-plus", "g1-pro", "g1-ultra")))
 
 
+def _paid_tier_from_load_code_assist(info: Any) -> Tuple[str, str]:
+    paid_tier_id = str(getattr(info, "paid_tier_id", "") or "")
+    paid_tier_name = str(getattr(info, "paid_tier_name", "") or "")
+    if paid_tier_id or paid_tier_name:
+        return paid_tier_id, paid_tier_name
+    raw = getattr(info, "raw", None)
+    if isinstance(raw, dict):
+        paid_tier = raw.get("paidTier") or raw.get("paid_tier")
+        if isinstance(paid_tier, dict):
+            paid_tier_id = str(paid_tier.get("id") or paid_tier.get("tierId") or "")
+            paid_tier_name = str(paid_tier.get("name") or paid_tier.get("displayName") or "")
+    return paid_tier_id, paid_tier_name
+
+
+def _google_one_credit_fields_from_load_code_assist(
+    info: Any,
+    paid_tier_id: str,
+    paid_tier_name: str,
+) -> Tuple[int, int, bool]:
+    credit_amount = getattr(info, "google_one_ai_credit_amount", 0) or 0
+    minimum_credit_amount = getattr(info, "google_one_ai_minimum_credit_amount", 0) or 0
+    has_google_one_ai_credits = bool(getattr(info, "has_google_one_ai_credits", False))
+    raw = getattr(info, "raw", None)
+    if isinstance(raw, dict):
+        credit_info = (
+            raw.get("googleOneAiCredit")
+            or raw.get("googleOneAiCredits")
+            or raw.get("googleOne")
+            or raw.get("google_one_ai_credit")
+        )
+        if isinstance(credit_info, dict):
+            credit_amount = (
+                credit_amount
+                or credit_info.get("amount")
+                or credit_info.get("creditAmount")
+                or credit_info.get("credits")
+                or 0
+            )
+            minimum_credit_amount = (
+                minimum_credit_amount
+                or credit_info.get("minimumAmount")
+                or credit_info.get("minimumCreditAmount")
+                or 0
+            )
+            has_google_one_ai_credits = has_google_one_ai_credits or bool(
+                credit_info.get("hasCredits")
+                or credit_info.get("hasGoogleOneAiCredits")
+                or credit_amount
+            )
+    tier_text = f"{paid_tier_id} {paid_tier_name}".lower()
+    if any(marker in tier_text for marker in ("google ai plus", "google ai pro", "google ai ultra", "g1-plus", "g1-pro", "g1-ultra")):
+        # Older Hermes Code Assist parsers expose raw paidTier but no explicit
+        # credit fields. Treat the paid Google One tier as an entitlement so
+        # request wrapping opts into GOOGLE_ONE_AI credit routing.
+        has_google_one_ai_credits = True
+    return int(credit_amount or 0), int(minimum_credit_amount or 0), has_google_one_ai_credits
+
+
 def _antigravity_credit_attempts(ctx: Optional[ProjectContext] = None) -> List[bool]:
     mode = _antigravity_google_one_ai_credits_mode()
     if mode == "always":
@@ -1057,11 +1115,14 @@ class GoogleAntigravityClient(GeminiCloudCodeClient):
             project_id = project_id or info.cloudaicompanion_project
             tier_id = getattr(info, "effective_tier_id", "") or getattr(info, "current_tier_id", "")
             tier_name = getattr(info, "effective_tier_name", "")
-            paid_tier_id = getattr(info, "paid_tier_id", "")
-            paid_tier_name = getattr(info, "paid_tier_name", "")
-            credit_amount = getattr(info, "google_one_ai_credit_amount", 0)
-            minimum_credit_amount = getattr(info, "google_one_ai_minimum_credit_amount", 0)
-            has_google_one_ai_credits = getattr(info, "has_google_one_ai_credits", False)
+            paid_tier_id, paid_tier_name = _paid_tier_from_load_code_assist(info)
+            (
+                credit_amount,
+                minimum_credit_amount,
+                has_google_one_ai_credits,
+            ) = _google_one_credit_fields_from_load_code_assist(
+                info, paid_tier_id, paid_tier_name
+            )
             managed_project_id = project_id if tier_id == FREE_TIER_ID else ""
             if project_id:
                 google_antigravity_oauth.update_project_ids(
