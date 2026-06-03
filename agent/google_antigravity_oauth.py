@@ -42,7 +42,7 @@ MARKER_BASE_URL = "cloudcode-pa://antigravity"
 #   HERMES_ANTIGRAVITY_CLIENT_SECRET
 ANTIGRAVITY_CLIENT_ID = ""
 ANTIGRAVITY_CLIENT_SECRET = ""
-_CLIENT_CACHE_EXTRACTOR_VERSION = 2
+_CLIENT_CACHE_EXTRACTOR_VERSION = 4
 
 
 def _client_cache_path() -> Path:
@@ -113,7 +113,10 @@ def _extract_client_from_agy_strings(text: str) -> tuple[str, str]:
     import re
 
     id_matches = list(re.finditer(r"(\d+-[\w]+\.apps\.googleusercontent\.com)", text))
-    secret_matches = list(re.finditer(r"(GOCSPX-[A-Za-z0-9_-]+)", text))
+    # Google OAuth client secrets have a fixed "GOCSPX-" prefix plus 28
+    # URL-safe characters. Go binaries can concatenate adjacent string data, so
+    # an unbounded character class over-captures into unrelated bytes.
+    secret_matches = list(re.finditer(r"(GOCSPX-[A-Za-z0-9_-]{28})", text))
     if not id_matches or not secret_matches:
         return "", ""
 
@@ -122,10 +125,21 @@ def _extract_client_from_agy_strings(text: str) -> tuple[str, str]:
         id_matches[0],
     )
     client_id = target.group(1)
-    client_secret = min(
-        secret_matches,
-        key=lambda match: abs(match.start() - target.start()),
-    ).group(1)
+    secret_clusters: list[list[Any]] = []
+    for match in secret_matches:
+        if (
+            not secret_clusters
+            or match.start() - secret_clusters[-1][-1].start()
+            > len(secret_clusters[-1][-1].group(1))
+        ):
+            secret_clusters.append([match])
+        else:
+            secret_clusters[-1].append(match)
+    nearest_cluster = min(
+        secret_clusters,
+        key=lambda cluster: min(abs(match.start() - target.start()) for match in cluster),
+    )
+    client_secret = nearest_cluster[0].group(1)
     return client_id, client_secret
 
 

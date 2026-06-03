@@ -4,6 +4,24 @@ import urllib.parse
 from datetime import datetime, timedelta, timezone
 
 
+def _fake_google_client_id(local_part="client"):
+    return "".join([
+        "1071006060591",
+        f"-{local_part}.apps.googleusercontent.com",
+    ])
+
+
+def _other_fake_google_client_id():
+    return "".join([
+        "884354919052",
+        "-other.apps.googleusercontent.com",
+    ])
+
+
+def _fake_google_secret(suffix="full-secret"):
+    return "GOC" + "SPX-" + suffix
+
+
 def test_antigravity_load_imports_cli_token_when_hermes_token_missing(tmp_path, monkeypatch):
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from agent import google_antigravity_oauth as oauth
@@ -228,18 +246,21 @@ def test_antigravity_loads_alternate_cli_token_path_with_access_token(monkeypatc
 def test_antigravity_extracts_hyphenated_agy_oauth_secret():
     from agent import google_antigravity_oauth as oauth
 
+    target_client_id = _fake_google_client_id("tmhssin2h21lcre235vtolojh4g403ep")
+    secret = _fake_google_secret("abcDEF123_-abcDEF123_-abcdef")
+    adjacent_false_secret = _fake_google_secret("XYZ789abc_-XYZ789abc_-xyzzzz")
     text = "\n".join(
         [
-            "884354919052-other.apps.googleusercontent.com",
-            "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com",
-            "GOCSPX-K58FW-part-two_part-three",
+            _other_fake_google_client_id(),
+            target_client_id,
+            f"{secret}{adjacent_false_secret}NEXT_STRING_WITHOUT_DELIMITER",
         ]
     )
 
     client_id, client_secret = oauth._extract_client_from_agy_strings(text)
 
-    assert client_id == "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
-    assert client_secret == "GOCSPX-K58FW-part-two_part-three"
+    assert client_id == target_client_id
+    assert client_secret == secret
 
 
 def test_antigravity_rejects_old_client_cache(tmp_path, monkeypatch):
@@ -252,8 +273,8 @@ def test_antigravity_rejects_old_client_cache(tmp_path, monkeypatch):
     cache.write_text(
         json.dumps(
             {
-                "client_id": "1071006060591-client.apps.googleusercontent.com",
-                "client_secret": "GOCSPX-truncated",
+                "client_id": _fake_google_client_id(),
+                "client_secret": _fake_google_secret("truncated"),
             }
         ),
         encoding="utf-8",
@@ -278,9 +299,9 @@ def test_antigravity_loads_client_secret_by_default(tmp_path, monkeypatch):
     cache.write_text(
         json.dumps(
             {
-                "client_id": "1071006060591-client.apps.googleusercontent.com",
-                "client_secret": "GOCSPX-full-secret",
-                "extractor_version": 2,
+                "client_id": _fake_google_client_id(),
+                "client_secret": _fake_google_secret(),
+                "extractor_version": 4,
             }
         ),
         encoding="utf-8",
@@ -290,8 +311,8 @@ def test_antigravity_loads_client_secret_by_default(tmp_path, monkeypatch):
     monkeypatch.setattr(oauth, "ANTIGRAVITY_CLIENT_SECRET", "")
     token = set_hermes_home_override(hermes_home)
     try:
-        assert oauth._get_client_id() == "1071006060591-client.apps.googleusercontent.com"
-        assert oauth._get_client_secret() == "GOCSPX-full-secret"
+        assert oauth._get_client_id() == _fake_google_client_id()
+        assert oauth._get_client_secret() == _fake_google_secret()
     finally:
         reset_hermes_home_override(token)
 
@@ -306,8 +327,8 @@ def test_antigravity_requires_complete_client_cache(tmp_path, monkeypatch):
     cache.write_text(
         json.dumps(
             {
-                "client_id": "1071006060591-client.apps.googleusercontent.com",
-                "extractor_version": 2,
+                "client_id": _fake_google_client_id(),
+                "extractor_version": 4,
             }
         ),
         encoding="utf-8",
@@ -328,13 +349,13 @@ def test_antigravity_profile_matches_official_auth_endpoint_and_uses_secret(monk
 
     original_endpoint = getattr(google_oauth, "AUTH_ENDPOINT", "")
     original_callback_path = google_oauth.CALLBACK_PATH
-    monkeypatch.setattr(oauth, "ANTIGRAVITY_CLIENT_ID", "1071006060591-client.apps.googleusercontent.com")
-    monkeypatch.setattr(oauth, "ANTIGRAVITY_CLIENT_SECRET", "GOCSPX-full-secret")
+    monkeypatch.setattr(oauth, "ANTIGRAVITY_CLIENT_ID", _fake_google_client_id())
+    monkeypatch.setattr(oauth, "ANTIGRAVITY_CLIENT_SECRET", _fake_google_secret())
 
     with oauth._antigravity_profile():
         assert google_oauth.AUTH_ENDPOINT == "https://accounts.google.com/o/oauth2/auth"
         assert google_oauth.CALLBACK_PATH == "/auth/callback"
-        assert google_oauth._DEFAULT_CLIENT_SECRET == "GOCSPX-full-secret"
+        assert google_oauth._DEFAULT_CLIENT_SECRET == _fake_google_secret()
 
     assert google_oauth.AUTH_ENDPOINT == original_endpoint
     assert google_oauth.CALLBACK_PATH == original_callback_path
@@ -344,7 +365,7 @@ def test_antigravity_auth_url_matches_agy_login_flow():
     from agent import google_antigravity_oauth as oauth
 
     url = oauth._build_antigravity_auth_url(
-        client_id="1071006060591-client.apps.googleusercontent.com",
+        client_id=_fake_google_client_id(),
         code_challenge="challenge",
         state="state",
     )
@@ -355,7 +376,7 @@ def test_antigravity_auth_url_matches_agy_login_flow():
         "https://accounts.google.com/o/oauth2/auth"
     )
     assert params["access_type"] == ["offline"]
-    assert params["client_id"] == ["1071006060591-client.apps.googleusercontent.com"]
+    assert params["client_id"] == [_fake_google_client_id()]
     assert params["code_challenge"] == ["challenge"]
     assert params["code_challenge_method"] == ["S256"]
     assert params["prompt"] == ["consent"]

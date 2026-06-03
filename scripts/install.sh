@@ -65,7 +65,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-EXTRACTOR_VERSION = 2
+EXTRACTOR_VERSION = 4
 home = Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes")
 cache = home / "auth" / "google_antigravity_client.json"
 cache.parent.mkdir(parents=True, exist_ok=True)
@@ -141,7 +141,7 @@ except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpi
 
 text = data.decode(errors="replace")
 ids = list(re.finditer(r"(\d+-[\w]+\.apps\.googleusercontent\.com)", text))
-secrets = list(re.finditer(r"(GOCSPX-[A-Za-z0-9_-]+)", text))
+secrets = list(re.finditer(r"(GOCSPX-[A-Za-z0-9_-]{28})", text))
 if not ids or not secrets:
     print("[!] No Google OAuth client id/secret found in agy — cache not updated")
     sys.exit(0)
@@ -151,10 +151,17 @@ target = next(
     ids[0],
 )
 client_id = target.group(1)
-client_secret = min(
-    secrets,
-    key=lambda match: abs(match.start() - target.start()),
-).group(1)
+secret_clusters = []
+for match in secrets:
+    if not secret_clusters or match.start() - secret_clusters[-1][-1].start() > len(secret_clusters[-1][-1].group(1)):
+        secret_clusters.append([match])
+    else:
+        secret_clusters[-1].append(match)
+nearest_cluster = min(
+    secret_clusters,
+    key=lambda cluster: min(abs(match.start() - target.start()) for match in cluster),
+)
+client_secret = nearest_cluster[0].group(1)
 
 write_cache({
     "client_id": client_id,
@@ -166,7 +173,7 @@ write_cache({
 print(
     f"[✓] Primed Antigravity OAuth client cache: {cache} "
     f"(id_prefix={client_id[:12]}, secret_len={len(client_secret)}, "
-    "secret_not_sent_by_default)"
+    "secret_sent_for_hosted_callback)"
 )
 PY
 }
