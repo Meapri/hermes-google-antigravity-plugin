@@ -318,7 +318,7 @@ if $POST_UPDATE; then
     echo "Run 'hermes model' to verify Google Antigravity appears in the provider list."
 else
     echo "Installation complete. Next steps:"
-    echo "  1. Make sure agy CLI is authenticated (run 'agy' once)"
+    echo "  1. Sign in: hermes auth add google-antigravity"
     echo "  2. Use: hermes chat --provider google-antigravity -m gemini-3.5-flash-high"
     echo "  3. Repair after Hermes updates with: ./scripts/repair.sh"
 fi

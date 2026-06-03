@@ -77,7 +77,7 @@ def main() -> int:
     creds = google_antigravity_oauth.load_credentials()
     if not creds or not getattr(creds, "access_token", ""):
         print("oauth_token_present: False")
-        print("status: agy token not found; run agy once and sign in")
+        print("status: token not found; run `hermes auth add google-antigravity`")
         return 1
 
     model = os.environ.get("HERMES_ANTIGRAVITY_PLAN_STATUS_MODEL", "gemini-3.5-flash-high")

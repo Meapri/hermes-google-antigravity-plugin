@@ -16,7 +16,6 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-import platform
 import subprocess
 import threading
 import time
@@ -270,8 +269,8 @@ def _credentials_from_mapping(data: Dict[str, Any]) -> Optional[GoogleCredential
         return None
     # Support both agy CLI's nested format: {"token": {"access_token": ..., "refresh_token": ..., "expiry": ...}}
     # and the flat format: {"access_token": ..., "refresh_token": ..., "expiry": ...}.
-    # Some macOS Keychain entries only store a refresh token; keep those as
-    # expired credentials so the normal Google refresh path can mint access.
+    # Some CLI entries only store a refresh token; keep those as expired
+    # credentials so the normal Google refresh path can mint access.
     token_data = data.get("token") if isinstance(data.get("token"), dict) else data
     access = str(
         token_data.get("access_token")
@@ -369,44 +368,8 @@ def _load_cli_file_credentials() -> Optional[GoogleCredentials]:
     return None
 
 
-def _load_macos_keychain_credentials() -> Optional[GoogleCredentials]:
-    if platform.system() != "Darwin":
-        return None
-    keychain_queries = (
-        ("gemini", "antigravity"),
-        ("Antigravity Safe Storage", "Antigravity"),
-        ("Antigravity Safe Storage", "Antigravity Key"),
-        ("Antigravity IDE Safe Storage", "Antigravity IDE"),
-        ("Antigravity Safe Storage", ""),
-        ("antigravity-oauth-token", ""),
-        ("antigravity-cli", ""),
-        ("Antigravity CLI", ""),
-    )
-    for service, account in keychain_queries:
-        cmd = ["security", "find-generic-password", "-s", service]
-        if account:
-            cmd.extend(["-a", account])
-        cmd.append("-w")
-        try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=5,
-                check=False,
-            )
-        except Exception:
-            continue
-        if result.returncode != 0 or not result.stdout.strip():
-            continue
-        creds = _credentials_from_text(result.stdout)
-        if creds is not None:
-            return creds
-    return None
-
-
 def _load_cli_credentials() -> Optional[GoogleCredentials]:
-    return _load_cli_file_credentials() or _load_macos_keychain_credentials()
+    return _load_cli_file_credentials()
 
 
 def _mirror_credentials_to_cli(creds: GoogleCredentials) -> None:
@@ -504,14 +467,14 @@ def get_valid_access_token(*, force_refresh: bool = False) -> str:
             # agy CLI which manages its own secrets internally.
             if not _refresh_token_via_agy_cli():
                 raise GoogleOAuthError(
-                    "No Antigravity OAuth credentials found. Run `agy` once and sign in.",
+                    "No Antigravity OAuth credentials found. Run `hermes auth add google-antigravity`.",
                     code="antigravity_oauth_not_logged_in",
                 )
             # Re-read the token that agy just refreshed
             creds = _load_cli_credentials()
             if creds is None:
                 raise GoogleOAuthError(
-                    "No Antigravity OAuth credentials found after `agy` refresh.",
+                    "No Antigravity OAuth credentials found after `agy` refresh. Run `hermes auth add google-antigravity`.",
                     code="antigravity_oauth_not_logged_in",
                 )
             # Persist to Hermes credential store so future refreshes

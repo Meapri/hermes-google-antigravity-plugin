@@ -147,15 +147,15 @@ def check_stale_antigravity_guidance(reporter: Reporter, hermes_home: Path) -> N
         return
     text = installed_patch.read_text(encoding="utf-8", errors="replace")
     stale_needles = [
-        "Run: hermes auth add google-antigravity",
-        'print("  Run: hermes auth add google-antigravity")',
+        "Do not run `hermes auth add google-antigravity`",
+        "this provider reuses the agy token.",
     ]
     if any(needle in text for needle in stale_needles):
         reporter.fail(
-            "installed patch still contains stale `hermes auth add google-antigravity` guidance"
+            "installed patch still contains stale agy-only auth guidance"
         )
     else:
-        reporter.ok("installed patch has agy-token auth guidance")
+        reporter.ok("installed patch has Google login auth guidance")
 
 
 def check_import_contracts(
@@ -234,6 +234,20 @@ def check_import_contracts(
             reporter.fail("/agyquota command metadata is not registered")
     except Exception as exc:
         reporter.fail(f"cannot inspect hermes_cli.commands: {type(exc).__name__}: {exc}")
+
+    try:
+        auth_commands = importlib.import_module("hermes_cli.auth_commands")
+        capable = getattr(auth_commands, "_OAUTH_CAPABLE_PROVIDERS", set())
+        if "google-antigravity" in capable:
+            reporter.ok("google-antigravity is OAuth-capable in auth add")
+        else:
+            reporter.fail("google-antigravity missing from auth add OAuth-capable providers")
+        if getattr(auth_commands, "_antigravity_auth_add_patched", False):
+            reporter.ok("hermes auth add google-antigravity is patched")
+        else:
+            reporter.fail("hermes auth add google-antigravity is not patched")
+    except Exception as exc:
+        reporter.fail(f"cannot inspect hermes_cli.auth_commands: {type(exc).__name__}: {exc}")
 
 
 def main() -> int:

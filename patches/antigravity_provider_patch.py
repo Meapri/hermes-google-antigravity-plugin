@@ -207,6 +207,45 @@ def _patch_auth_registry() -> bool:
         import hermes_cli.auth_commands as ac
         if hasattr(ac, "_OAUTH_CAPABLE_PROVIDERS"):
             ac._OAUTH_CAPABLE_PROVIDERS.add("google-antigravity")
+        original_auth_add = getattr(ac, "auth_add_command", None)
+        if callable(original_auth_add) and not getattr(ac, "_antigravity_auth_add_patched", False):
+            def _antigravity_auth_add_command(args):
+                raw_provider = str(getattr(args, "provider", "") or "").strip().lower()
+                normalized = raw_provider.replace("_", "-")
+                if normalized in {"google-antigravity", "antigravity", "antigravity-oauth"}:
+                    from agent.google_antigravity_oauth import run_antigravity_oauth_login_pure
+
+                    creds = run_antigravity_oauth_login_pure()
+                    if not creds:
+                        raise SystemExit("Google Antigravity OAuth login did not return credentials.")
+                    pool = ac.load_pool("google-antigravity")
+                    label = (getattr(args, "label", None) or "").strip() or (
+                        creds.get("email") or ac._oauth_default_label(
+                            "google-antigravity", len(pool.entries()) + 1
+                        )
+                    )
+                    entry = ac.PooledCredential(
+                        provider="google-antigravity",
+                        id=ac.uuid.uuid4().hex[:6],
+                        label=label,
+                        auth_type=ac.AUTH_TYPE_OAUTH,
+                        priority=0,
+                        source=f"{ac.SOURCE_MANUAL}:google_antigravity_pkce",
+                        access_token=creds["access_token"],
+                        refresh_token=creds.get("refresh_token"),
+                        expires_at_ms=creds.get("expires_at_ms"),
+                        base_url="cloudcode-pa://antigravity",
+                    )
+                    pool.add_entry(entry)
+                    print(
+                        'Added google-antigravity OAuth credential '
+                        f'#{len(pool.entries())}: "{entry.label}"'
+                    )
+                    return
+                return original_auth_add(args)
+
+            ac.auth_add_command = _antigravity_auth_add_command
+            ac._antigravity_auth_add_patched = True
     except Exception:
         pass
 
@@ -496,8 +535,8 @@ def _model_flow_google_antigravity(_config, current_model=""):
             print(f"  Authenticated as: {email}")
     except Exception as exc:
         print(f"  Auth check failed: {exc}")
-        print("  Run `agy` once and sign in, then run `./scripts/repair.sh --skip-pull`.")
-        print("  Do not run `hermes auth add google-antigravity`; this provider reuses the agy token.")
+        print("  Run `hermes auth add google-antigravity` to sign in with Google.")
+        print("  If you prefer agy token reuse, run `agy` once and then `./scripts/repair.sh --skip-pull`.")
         return
 
     # Curated model list (same as plugin supported models)

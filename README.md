@@ -2,14 +2,17 @@
 
 Unofficial Google Antigravity OAuth provider for [Hermes Agent](https://github.com/NousResearch/hermes-agent).
 
-**One-click install.** Log into `agy` CLI once, then run `install.sh`. No API keys, no OAuth client registration, no manual patching. Works the same way as [hermes-claude-auth](https://github.com/kristianvast/hermes-claude-auth) — uses your existing Antigravity CLI OAuth token to access Gemini models through Hermes.
+**One-click install.** Install the `agy` CLI, run `install.sh`, then sign in
+with `hermes auth add google-antigravity`. No API keys, no OAuth client
+registration, no manual patching. Existing `agy` CLI token files are still
+reused when available, but browser Google OAuth login is the primary fallback.
 
 ## How it works
 
 ```
-                        agy CLI login (once)
+              hermes auth add google-antigravity
                               ↓
-          ~/.gemini/antigravity-cli/antigravity-oauth-token
+              ~/.hermes/auth/google_antigravity.json
                               ↓
               sitecustomize.py → import hook fires
                               ↓
@@ -35,12 +38,16 @@ The version number is fetched live from Antigravity's auto-update endpoint, so i
 
 ### Token refresh
 
-When the OAuth token expires, the normal refresh flow may fail (client secrets are embedded in `agy`'s binary). The plugin falls back to `agy --print "OK"` which refreshes the token using `agy`'s own credential management, then re-reads the token file.
+When the OAuth token expires, the provider refreshes it through Hermes'
+Google OAuth machinery. If a compatible `agy` CLI token file exists, it can
+still be imported and mirrored, but macOS Keychain safe-storage blobs are not
+decoded.
 
 ## Prerequisites
 
 - [Hermes Agent](https://github.com/NousResearch/hermes-agent) installed
-- [Antigravity CLI](https://antigravity.google/cli/install) (`agy`) installed and logged in at least once
+- [Antigravity CLI](https://antigravity.google/cli/install) (`agy`) installed
+  so the Antigravity OAuth client can be extracted/cached
 - Linux or macOS (Windows untested)
 - Python 3.11+
 
@@ -52,17 +59,16 @@ cd hermes-google-antigravity-plugin
 ./scripts/install.sh
 ```
 
-That's it — no separate credential step. The provider reads your existing `agy`
-CLI OAuth token directly at runtime (from
-`~/.gemini/antigravity-cli/antigravity-oauth-token`), so as long as you've run
-`agy` once and logged in, `hermes chat --provider google-antigravity` just works.
-When the token expires it is auto-refreshed via `agy --print`.
+Then sign in with Google:
 
-> **Note:** `hermes auth add google-antigravity` is **not** required and is
-> currently a no-op for this provider — Hermes reports
-> `not implemented for auth type oauth yet`. Authentication is handled entirely
-> by the runtime credential resolver against the `agy` token, not by the
-> `hermes auth` credential store. Skip it.
+```bash
+hermes auth add google-antigravity
+```
+
+The login opens the browser and stores Antigravity-scoped Google OAuth
+credentials at `~/.hermes/auth/google_antigravity.json`. If a compatible `agy`
+CLI OAuth token file exists at `~/.gemini/antigravity-cli/antigravity-oauth-token`,
+the provider can still import it, but that path is optional.
 
 If you already have `hermes-claude-auth` installed, the `sitecustomize.py` hook
 handles both patches side by side. If Claude auth is not installed, those
@@ -81,9 +87,11 @@ Repository: https://github.com/Meapri/hermes-google-antigravity-plugin
 
 Requirements:
 - Hermes Agent must already be installed.
-- Antigravity CLI (`agy`) must be installed and logged in at least once.
-- Do not run `hermes auth add google-antigravity`; this provider uses the
-  existing `agy` OAuth token.
+- Antigravity CLI (`agy`) must be installed so the installer can cache the
+  Antigravity OAuth client.
+- Use `hermes auth add google-antigravity` for Google browser login after
+  repair. Existing compatible `agy` token files may be reused, but do not rely
+  on macOS Keychain safe-storage blobs.
 - Do not edit Hermes source files directly.
 
 Use a persistent clone at ~/hermes-google-antigravity-plugin:
@@ -110,17 +118,12 @@ After repair, verify and report:
   `hermes_cli.auth`, `hermes_cli.providers`, `hermes_cli.runtime_provider`,
   `hermes_cli.commands`, `cli`, `agent.auxiliary_client`,
   `hermes_cli.model_switch`, and `api.config`.
-- `~/.hermes/patches/antigravity_provider_patch.py` does not contain the stale
-  line `Run: hermes auth add google-antigravity`; if it does, the installed
-  patch is old and must be replaced from the latest repo.
+- `hermes auth add google-antigravity` is available and starts the Google
+  OAuth login path.
 - `./scripts/plan_status.py` reports the expected paid tier. For Google AI
   Plus/Pro/Ultra accounts, `raw_paid_tier_id` or `context_paid_tier_id` should
   be a `g1-*` tier. `credit_attempts` shows whether requests will include
   `GOOGLE_ONE_AI` routing; it is separate from the base plan quota report.
-- On macOS, if auth still fails after `agy` login, verify that Keychain has the
-  CLI credential at service `gemini`, account `antigravity`, or one of the
-  Antigravity safe-storage fallbacks. Do not print or paste token values; only
-  inspect service/account names and JSON key names.
 - installed files match the repo:
   `~/.hermes/patches/antigravity_provider_patch.py`,
   `~/.hermes/hermes-agent/agent/google_antigravity_adapter.py`,
@@ -471,42 +474,23 @@ systemctl --user restart hermes-gateway
 
 **google-antigravity not in `hermes model` list** — the TUI picker patch may have been declined due to Hermes API changes. Run `hermes config set model.provider google-antigravity` as a workaround.
 
-**Token refresh fails** — make sure `agy` is on PATH and logged in. Run `agy --print "OK"` manually to verify.
+**Token refresh fails** — run `hermes auth add google-antigravity` again to
+renew the browser Google OAuth login. If you intentionally rely on an `agy`
+token file, make sure `agy` is on PATH and run `agy --print "OK"` manually.
 
-**Auth check says `No Antigravity OAuth credentials found after agy refresh`** —
-the plugin could run `agy`, but could not read the refreshed credential. On
-Linux it reads `~/.gemini/antigravity-cli/antigravity-oauth-token`; on macOS it
-checks Keychain in this order: service `gemini` account `antigravity`, then
-`Antigravity Safe Storage` accounts `Antigravity` and `Antigravity Key`, then
-`Antigravity IDE Safe Storage` account `Antigravity IDE`, then legacy
-service-only fallbacks. The token payload may contain both `access_token` and
-`refresh_token`, or only a `refresh_token`; refresh-only credentials are treated
-as expired and refreshed through Hermes' Google OAuth path. If your `agy` uses a
-custom token file, set `HERMES_ANTIGRAVITY_CLI_TOKEN_PATH=/path/to/token` and
-run `./scripts/repair.sh --skip-pull`.
-
-On macOS, this is a safe shape check for the current CLI Keychain token. It
-does not print token values:
+**Auth check says `No Antigravity OAuth credentials found`** — run:
 
 ```bash
-python3 - <<'PY'
-import json, subprocess
-raw = subprocess.check_output(
-    ["security", "find-generic-password", "-s", "gemini", "-a", "antigravity", "-w"],
-    text=True,
-)
-data = json.loads(raw)
-print("top keys", sorted(data.keys()) if isinstance(data, dict) else type(data).__name__)
-token = data.get("token") if isinstance(data, dict) and isinstance(data.get("token"), dict) else data
-print("token keys", sorted(token.keys()) if isinstance(token, dict) else type(token).__name__)
-PY
+hermes auth add google-antigravity
+./scripts/repair.sh --skip-pull
 ```
 
-**Auth check says `No Google OAuth credentials found` or suggests
-`hermes auth add google-antigravity`** — that is a stale Hermes Google OAuth
-path, not the intended Antigravity flow. Run `agy` once and sign in, then run
-`./scripts/repair.sh --skip-pull`. This provider should reuse the `agy` token;
-`hermes auth add google-antigravity` is not required.
+The provider no longer tries to decode macOS Keychain safe-storage entries.
+It reads Hermes' own `~/.hermes/auth/google_antigravity.json` first and then
+compatible plaintext `agy` token files such as
+`~/.gemini/antigravity-cli/antigravity-oauth-token`. If your `agy` uses a
+custom plaintext token file, set
+`HERMES_ANTIGRAVITY_CLI_TOKEN_PATH=/path/to/token`.
 
 **Google AI Plus/Pro/Ultra is not being used** — run `./scripts/plan_status.py`
 and, inside Hermes CLI, `/agyquota`. If `raw_paid_tier_id` is empty, Google did

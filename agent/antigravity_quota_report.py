@@ -91,7 +91,7 @@ def build_antigravity_quota_report(*, include_grpc: bool = True) -> str:
 
     creds = google_antigravity_oauth.load_credentials()
     if not creds or not getattr(creds, "access_token", ""):
-        return "Antigravity OAuth token not found. Run `agy` once and sign in."
+        return "Antigravity OAuth token not found. Run `hermes auth add google-antigravity`."
 
     try:
         access_token = google_antigravity_oauth.get_valid_access_token()
