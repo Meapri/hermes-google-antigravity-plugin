@@ -72,39 +72,53 @@ Paste this into another Hermes/Codex agent when you want it to install or
 refresh this provider on that machine:
 
 ```text
-Install or refresh the Hermes Google Antigravity provider from
-https://github.com/Meapri/hermes-google-antigravity-plugin.
+Set up the Hermes Google Antigravity provider and automatic post-update repair
+on this machine.
 
-Use a persistent clone at ~/hermes-google-antigravity-plugin. If the clone
-exists, fetch/pull it with --ff-only. If it does not exist, clone it there.
-Then run ./scripts/install.sh for a first install. When Hermes was just updated
-or anything looks broken, run ./scripts/repair.sh; it updates this plugin clone,
-reinstalls runtime files/hooks, runs ./scripts/install.sh --check, and reports
-the result. Use ./scripts/repair.sh --smoke if credentials and network are
-available and you want an end-to-end provider call.
+Repository: https://github.com/Meapri/hermes-google-antigravity-plugin
 
-Do not run `hermes auth add google-antigravity`; this provider uses the
-existing Antigravity CLI (`agy`) OAuth token. First verify that Hermes Agent is
-installed, `agy` is installed and logged in, and a Hermes virtualenv exists.
+Requirements:
+- Hermes Agent must already be installed.
+- Antigravity CLI (`agy`) must be installed and logged in at least once.
+- Do not run `hermes auth add google-antigravity`; this provider uses the
+  existing `agy` OAuth token.
+- Do not edit Hermes source files directly.
 
-After installation, verify these files exist:
-- ~/.hermes/patches/antigravity_provider_patch.py
-- ~/.hermes/hermes-agent/agent/google_antigravity_adapter.py
-- ~/.hermes/hermes-agent/agent/google_antigravity_oauth.py
-- ~/.hermes/plugins/model-providers/google-antigravity/plugin.yaml
-- the Hermes venv site-packages/sitecustomize.py
+Use a persistent clone at ~/hermes-google-antigravity-plugin:
+1. If ~/hermes-google-antigravity-plugin exists, check whether it has local
+   changes. If clean, run `git fetch origin && git pull --ff-only origin main`.
+   If dirty, do not overwrite local changes; continue with the current checkout
+   and report that pull was skipped.
+2. If the clone does not exist, run:
+   `git clone https://github.com/Meapri/hermes-google-antigravity-plugin.git ~/hermes-google-antigravity-plugin`
+3. Run:
+   `cd ~/hermes-google-antigravity-plugin && ./scripts/repair.sh`
 
-Also verify sitecustomize.py contains the google-antigravity hooks, especially
-`hermes_cli.auth`, `hermes_cli.providers`, `hermes_cli.runtime_provider`,
-`agent.auxiliary_client`, `hermes_cli.model_switch`, and `api.config`.
+The repair command must install the provider, install the shared
+sitecustomize.py import hook, install the Hermes git post-merge auto-recovery
+hook, restart hermes-gateway.service if it is running, and run the full
+`./scripts/install.sh --check` integrity/contract check.
 
-If credentials are available, run this smoke test:
-hermes chat --provider google-antigravity -m gemini-3.5-flash-high -q "OK"
+After repair, verify and report:
+- `./scripts/install.sh --check` passes.
+- `~/.hermes/hermes-agent/.git/hooks/post-merge` exists and is executable.
+- `~/.hermes/hermes-agent/.git/hooks/post-merge` references
+  `hermes-google-antigravity-plugin`.
+- the Hermes venv `sitecustomize.py` exists and contains these hooks:
+  `hermes_cli.auth`, `hermes_cli.providers`, `hermes_cli.runtime_provider`,
+  `agent.auxiliary_client`, `hermes_cli.model_switch`, and `api.config`.
+- installed files match the repo:
+  `~/.hermes/patches/antigravity_provider_patch.py`,
+  `~/.hermes/hermes-agent/agent/google_antigravity_adapter.py`,
+  `~/.hermes/hermes-agent/agent/google_antigravity_oauth.py`, and
+  `~/.hermes/plugins/model-providers/google-antigravity/plugin.yaml`.
 
-If the smoke test cannot be run because credentials, network, or a gateway
-service are unavailable, say exactly what blocked it. Do not edit Hermes source
-files directly; this plugin installs copied runtime files and a sitecustomize
-import hook.
+If credentials, network, and the `hermes` command are available, run:
+`./scripts/repair.sh --smoke`
+
+If the smoke test cannot be run, say exactly what blocked it. Finish with the
+current git commit, whether automatic repair is installed, and the check/smoke
+results.
 ```
 
 ## Usage
