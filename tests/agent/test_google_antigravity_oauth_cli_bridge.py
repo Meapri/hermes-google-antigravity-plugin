@@ -177,3 +177,45 @@ def test_antigravity_loads_macos_keychain_token(monkeypatch, tmp_path):
     assert creds is not None
     assert creds.access_token == "keychain-access"
     assert creds.refresh_token == "keychain-refresh"
+
+
+def test_antigravity_loads_macos_keychain_refresh_only_token(monkeypatch, tmp_path):
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from agent import google_antigravity_oauth as oauth
+
+    hermes_home = tmp_path / "hermes"
+    home = tmp_path / "home"
+    payload = json.dumps(
+        {
+            "token": {
+                "refresh_token": "keychain-refresh",
+            },
+            "auth_method": "consumer",
+        }
+    )
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:6] == [
+            "security",
+            "find-generic-password",
+            "-s",
+            "gemini",
+            "-a",
+            "antigravity",
+        ]:
+            return SimpleNamespace(returncode=0, stdout=payload, stderr="")
+        return SimpleNamespace(returncode=1, stdout="", stderr="")
+
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(oauth.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(oauth.subprocess, "run", fake_run)
+    token = set_hermes_home_override(hermes_home)
+    try:
+        creds = oauth.load_credentials()
+    finally:
+        reset_hermes_home_override(token)
+
+    assert creds is not None
+    assert creds.access_token == ""
+    assert creds.refresh_token == "keychain-refresh"
+    assert creds.expires_ms == 0

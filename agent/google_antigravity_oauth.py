@@ -269,7 +269,9 @@ def _credentials_from_mapping(data: Dict[str, Any]) -> Optional[GoogleCredential
     if not isinstance(data, dict):
         return None
     # Support both agy CLI's nested format: {"token": {"access_token": ..., "refresh_token": ..., "expiry": ...}}
-    # and the flat format: {"access_token": ..., "refresh_token": ..., "expiry": ...}
+    # and the flat format: {"access_token": ..., "refresh_token": ..., "expiry": ...}.
+    # Some macOS Keychain entries only store a refresh token; keep those as
+    # expired credentials so the normal Google refresh path can mint access.
     token_data = data.get("token") if isinstance(data.get("token"), dict) else data
     access = str(
         token_data.get("access_token")
@@ -283,19 +285,67 @@ def _credentials_from_mapping(data: Dict[str, Any]) -> Optional[GoogleCredential
         or token_data.get("refresh")
         or ""
     )
-    if not access or not refresh:
+    if "refresh" in token_data and refresh:
+        refresh = RefreshParts.parse(refresh).refresh_token
+    if not refresh:
         return None
     return GoogleCredentials(
         access_token=access,
         refresh_token=refresh,
-        expires_ms=_parse_cli_expiry_ms(
-            token_data.get("expiry")
-            or token_data.get("expires_at")
-            or token_data.get("expiresAt")
-            or token_data.get("expires")
+        expires_ms=(
+            _parse_cli_expiry_ms(
+                token_data.get("expiry")
+                or token_data.get("expires_at")
+                or token_data.get("expiresAt")
+                or token_data.get("expires")
+            )
+            if access
+            else 0
         ),
         email=str(data.get("email") or token_data.get("email") or ""),
     )
+
+
+def _credentials_from_text(text: str) -> Optional[GoogleCredentials]:
+    stripped = text.strip()
+    if not stripped:
+        return None
+    try:
+        data = json.loads(stripped)
+    except json.JSONDecodeError:
+        # Raw Google refresh tokens often start with "1//". Avoid treating
+        # arbitrary keychain secrets as OAuth credentials.
+        if stripped.startswith("1//"):
+            return GoogleCredentials(access_token="", refresh_token=stripped, expires_ms=0)
+        return None
+    return _credentials_from_json_data(data)
+
+
+def _credentials_from_json_data(data: Any) -> Optional[GoogleCredentials]:
+    if isinstance(data, list):
+        for item in data:
+            if isinstance(item, dict):
+                creds = _credentials_from_mapping(item)
+                if creds is not None:
+                    return creds
+        return None
+    if not isinstance(data, dict):
+        return None
+    creds = _credentials_from_mapping(data)
+    if creds is not None:
+        return creds
+    for value in data.values():
+        if isinstance(value, dict):
+            creds = _credentials_from_mapping(value)
+            if creds is not None:
+                return creds
+        elif isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict):
+                    creds = _credentials_from_mapping(item)
+                    if creds is not None:
+                        return creds
+    return None
 
 
 def _load_credentials_from_json_text(text: str) -> Optional[GoogleCredentials]:
@@ -303,22 +353,7 @@ def _load_credentials_from_json_text(text: str) -> Optional[GoogleCredentials]:
         data = json.loads(text)
     except json.JSONDecodeError:
         return None
-    if isinstance(data, dict):
-        creds = _credentials_from_mapping(data)
-        if creds is not None:
-            return creds
-        for value in data.values():
-            if isinstance(value, dict):
-                creds = _credentials_from_mapping(value)
-                if creds is not None:
-                    return creds
-            elif isinstance(value, list):
-                for item in value:
-                    if isinstance(item, dict):
-                        creds = _credentials_from_mapping(item)
-                        if creds is not None:
-                            return creds
-    return None
+    return _credentials_from_json_data(data)
 
 
 def _load_cli_file_credentials() -> Optional[GoogleCredentials]:
@@ -326,7 +361,7 @@ def _load_cli_file_credentials() -> Optional[GoogleCredentials]:
         if not path.exists():
             continue
         try:
-            creds = _load_credentials_from_json_text(path.read_text(encoding="utf-8"))
+            creds = _credentials_from_text(path.read_text(encoding="utf-8"))
         except OSError:
             continue
         if creds is not None:
@@ -364,7 +399,7 @@ def _load_macos_keychain_credentials() -> Optional[GoogleCredentials]:
             continue
         if result.returncode != 0 or not result.stdout.strip():
             continue
-        creds = _load_credentials_from_json_text(result.stdout.strip())
+        creds = _credentials_from_text(result.stdout)
         if creds is not None:
             return creds
     return None
@@ -483,6 +518,9 @@ def get_valid_access_token(*, force_refresh: bool = False) -> str:
             # pick up the agy-refreshed token first
             google_oauth.save_credentials(creds)
             token = creds.access_token
+            if not token or creds.access_token_expired(skew_seconds=0):
+                token = google_oauth.get_valid_access_token(force_refresh=True)
+                creds = google_oauth.load_credentials()
     if creds is not None:
         _mirror_credentials_to_cli(creds)
     return token

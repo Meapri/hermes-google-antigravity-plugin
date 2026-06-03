@@ -479,9 +479,11 @@ Linux it reads `~/.gemini/antigravity-cli/antigravity-oauth-token`; on macOS it
 checks Keychain in this order: service `gemini` account `antigravity`, then
 `Antigravity Safe Storage` accounts `Antigravity` and `Antigravity Key`, then
 `Antigravity IDE Safe Storage` account `Antigravity IDE`, then legacy
-service-only fallbacks. If your `agy` uses a custom token file, set
-`HERMES_ANTIGRAVITY_CLI_TOKEN_PATH=/path/to/token` and run
-`./scripts/repair.sh --skip-pull`.
+service-only fallbacks. The token payload may contain both `access_token` and
+`refresh_token`, or only a `refresh_token`; refresh-only credentials are treated
+as expired and refreshed through Hermes' Google OAuth path. If your `agy` uses a
+custom token file, set `HERMES_ANTIGRAVITY_CLI_TOKEN_PATH=/path/to/token` and
+run `./scripts/repair.sh --skip-pull`.
 
 On macOS, this is a safe shape check for the current CLI Keychain token. It
 does not print token values:
