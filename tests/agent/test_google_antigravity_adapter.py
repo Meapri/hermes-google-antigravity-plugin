@@ -341,6 +341,7 @@ def test_google_grounding_auto_adds_google_search_for_current_gemini_requests(mo
     )
 
     assert {"google_search": {}} in request["tools"]
+    assert "toolConfig" not in request
     assert getattr(ag, "ANTIGRAVITY_GOOGLE_GROUNDING_HINT") in request["systemInstruction"]["parts"][0]["text"]
 
 
@@ -365,14 +366,14 @@ def test_google_grounding_suppresses_external_search_tools_by_default(monkeypatc
         model="gemini-3.5-flash-high",
     )
 
-    assert {"google_search": {}} in request["tools"]
-    declarations = request["tools"][0]["functionDeclarations"]
-    assert [item["name"] for item in declarations] == ["read_file"]
+    assert request["tools"] == [{"google_search": {}}]
+    assert "toolConfig" not in request
 
 
 def test_google_grounding_can_keep_external_search_tools_when_configured(monkeypatch):
     monkeypatch.setenv("HERMES_ANTIGRAVITY_GOOGLE_GROUNDING", "always")
     monkeypatch.setenv("HERMES_ANTIGRAVITY_GROUNDING_SUPPRESS_EXTERNAL_SEARCH_TOOLS", "false")
+    monkeypatch.setenv("HERMES_ANTIGRAVITY_GROUNDING_SUPPRESS_FUNCTION_TOOLS", "false")
     request = {
         "contents": [{"role": "user", "parts": [{"text": "latest news"}]}],
         "tools": [
@@ -416,6 +417,7 @@ def test_google_grounding_can_be_forced_or_disabled(monkeypatch):
     )
 
     assert {"google_search": {}} in request["tools"]
+    assert "toolConfig" not in request
 
     monkeypatch.setenv("HERMES_ANTIGRAVITY_GOOGLE_GROUNDING", "off")
     disabled = {"contents": [{"role": "user", "parts": [{"text": "최신 뉴스 검색해줘"}]}]}

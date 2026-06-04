@@ -193,6 +193,10 @@ Default behavior is conservative:
 - when native grounding is attached, external web search function tools such as
   DuckDuckGo/Brave/Tavily search are suppressed by default so Hermes does not
   pick the DuckDuckGo skill instead of Google grounding
+- when native grounding is attached, Hermes function tools are hidden by
+  default and only `google_search` is sent; Antigravity currently rejects some
+  requests that mix built-in Google Search grounding with normal function
+  calling
 - Claude and GPT-OSS Antigravity models are skipped by default because native
   Gemini `google_search` support is model/backend specific
 
@@ -206,11 +210,15 @@ Configure it with:
 | `HERMES_ANTIGRAVITY_GOOGLE_GROUNDING` | `off` / `0` / `false` | Never attach Google Search grounding |
 | `HERMES_ANTIGRAVITY_GROUNDING_SUPPRESS_EXTERNAL_SEARCH_TOOLS` | unset / `true` | Drop external web search tools when native Google grounding is attached |
 | `HERMES_ANTIGRAVITY_GROUNDING_SUPPRESS_EXTERNAL_SEARCH_TOOLS` | `false` | Keep DuckDuckGo/Brave/Tavily tools available alongside native grounding |
+| `HERMES_ANTIGRAVITY_GROUNDING_SUPPRESS_FUNCTION_TOOLS` | unset / `true` | Send only native `google_search` when grounding is attached |
+| `HERMES_ANTIGRAVITY_GROUNDING_SUPPRESS_FUNCTION_TOOLS` | `false` | Keep normal Hermes function tools available alongside native grounding; may be rejected by Antigravity |
 
 Example:
 
 ```bash
 export HERMES_GOOGLE_GROUNDING_SEARCH_ENABLED=true
+export HERMES_ANTIGRAVITY_GOOGLE_GROUNDING=always
+export HERMES_ANTIGRAVITY_GROUNDING_SUPPRESS_FUNCTION_TOOLS=true
 hermes chat --provider google-antigravity -m gemini-3.5-flash-high \
   -q "오늘 기준 Gemini 최신 소식 검색해서 출처와 같이 요약해줘"
 ```

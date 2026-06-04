@@ -130,7 +130,8 @@ ANTIGRAVITY_GOOGLE_GROUNDING_HINT = (
     "Google Search grounding is enabled for this request. Use grounded search "
     "results for current facts, separate verified facts from inference, and "
     "include source URLs when they materially help verification. Prefer this "
-    "native grounding path over external web or DuckDuckGo search tools."
+    "native grounding path over external web or DuckDuckGo search tools; do "
+    "not request a separate web-search tool for the same facts."
 )
 GPT_OSS_TOOL_PROTOCOL_HINT = (
     "Use the provided function-calling protocol for tools. Do not emit Harmony "
@@ -213,6 +214,9 @@ def _has_google_search_tool(request: Dict[str, Any]) -> bool:
 def _suppress_external_search_tools_for_grounding() -> bool:
     return _env_truthy("HERMES_ANTIGRAVITY_GROUNDING_SUPPRESS_EXTERNAL_SEARCH_TOOLS", True)
 
+def _suppress_function_tools_for_grounding() -> bool:
+    return _env_truthy("HERMES_ANTIGRAVITY_GROUNDING_SUPPRESS_FUNCTION_TOOLS", True)
+
 def _is_external_search_tool_declaration(declaration: Any) -> bool:
     if not isinstance(declaration, dict):
         return False
@@ -263,6 +267,20 @@ def _drop_external_search_tools(request: Dict[str, Any]) -> None:
     else:
         request.pop("tools", None)
 
+def _drop_function_tools_for_grounding(request: Dict[str, Any]) -> None:
+    tools = request.get("tools")
+    if not isinstance(tools, list):
+        return
+    grounded_tools = [
+        tool for tool in tools
+        if isinstance(tool, dict) and isinstance(tool.get("google_search"), dict)
+    ]
+    if grounded_tools:
+        request["tools"] = grounded_tools
+    else:
+        request.pop("tools", None)
+    request.pop("toolConfig", None)
+
 def _maybe_enable_google_grounding(request: Dict[str, Any], *, model: str) -> None:
     mode = _antigravity_google_grounding_mode()
     if mode == "off" or not _is_gemini_model(model):
@@ -276,6 +294,8 @@ def _maybe_enable_google_grounding(request: Dict[str, Any], *, model: str) -> No
         tools.append({"google_search": {}})
     if _suppress_external_search_tools_for_grounding():
         _drop_external_search_tools(request)
+    if _suppress_function_tools_for_grounding():
+        _drop_function_tools_for_grounding(request)
     _append_system_text(request, ANTIGRAVITY_GOOGLE_GROUNDING_HINT)
 
 def _normalize_claude_schema(schema: Any) -> Dict[str, Any]:
