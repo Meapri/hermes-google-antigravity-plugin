@@ -130,6 +130,9 @@ After repair, verify and report:
   `hermes_cli.auth`, `hermes_cli.providers`, `hermes_cli.runtime_provider`,
   `hermes_cli.commands`, `cli`, `agent.auxiliary_client`,
   `hermes_cli.model_switch`, and `api.config`.
+- `agent.auxiliary_client.resolve_provider_client("google-antigravity")`
+  resolves to `agent.google_antigravity_adapter.GoogleAntigravityClient` so
+  Hermes auxiliary tasks get the OpenAI-compatible API client they expect.
 - `hermes auth add google-antigravity` is available and starts the Google
   OAuth login path. The login URL should use
   `https://antigravity.google/oauth-callback`; after browser login, paste the
@@ -424,7 +427,10 @@ These are hard-won internals worth knowing before you touch the hooks:
   - `hermes_cli.providers` — full provider apply
   - `hermes_cli.commands` — `/agyquota` command metadata
   - `cli` — `/agyquota` command handler
-  - `agent.auxiliary_client` — auxiliary-client provider resolver
+  - `agent.auxiliary_client` — auxiliary-client provider resolver; it must
+    return `agent.google_antigravity_adapter.GoogleAntigravityClient` for
+    `google-antigravity` so title generation, context compression, and vision
+    helpers receive the OpenAI-compatible API shape they expect
   - `hermes_cli.runtime_provider` — runtime credential resolver after module load
   - `hermes_cli.main` — TUI model picker
   - `hermes_cli.model_switch` — gateway `/model` picker row
