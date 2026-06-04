@@ -1,0 +1,5 @@
+name: google-antigravity
+version: 0.1.0
+description: "Google Antigravity OAuth image generation backend. Uses the existing Antigravity OAuth session and saves generated images to $HERMES_HOME/cache/images/."
+author: Meapri + Hermes Agent
+kind: backend

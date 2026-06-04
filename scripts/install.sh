@@ -210,6 +210,8 @@ if $CHECK_ONLY; then
         "$HERMES_AGENT_DIR/agent/google_antigravity_oauth.py|$REPO_ROOT/agent/google_antigravity_oauth.py"
         "$HERMES_AGENT_DIR/agent/antigravity_quota_grpc.py|$REPO_ROOT/agent/antigravity_quota_grpc.py"
         "$HERMES_AGENT_DIR/agent/antigravity_stream_grpc.py|$REPO_ROOT/agent/antigravity_stream_grpc.py"
+        "$HERMES_AGENT_DIR/plugins/image_gen/google-antigravity/__init__.py|$REPO_ROOT/plugins/image_gen/google-antigravity/__init__.py"
+        "$HERMES_AGENT_DIR/plugins/image_gen/google-antigravity/plugin.yaml|$REPO_ROOT/plugins/image_gen/google-antigravity/plugin.yaml"
     )
     for pair in "${DRIFT_PAIRS[@]}"; do
         installed="${pair%%|*}"
@@ -255,6 +257,12 @@ if ! $POST_UPDATE; then
        "$HERMES_HOME/plugins/model-providers/google-antigravity/"
     printf "${GREEN}[✓] Installed plugin to %s/plugins/model-providers/google-antigravity/${RESET}\n" "$HERMES_HOME"
 fi
+
+mkdir -p "$HERMES_AGENT_DIR/plugins/image_gen/google-antigravity"
+cp "$REPO_ROOT/plugins/image_gen/google-antigravity/__init__.py" \
+   "$REPO_ROOT/plugins/image_gen/google-antigravity/plugin.yaml" \
+   "$HERMES_AGENT_DIR/plugins/image_gen/google-antigravity/"
+printf "${GREEN}[✓] Installed image backend to %s/plugins/image_gen/google-antigravity/${RESET}\n" "$HERMES_AGENT_DIR"
 
 # ── Step 2: Copy agent runtime files ────────────────────────────────
 for f in google_antigravity_adapter.py google_antigravity_oauth.py \

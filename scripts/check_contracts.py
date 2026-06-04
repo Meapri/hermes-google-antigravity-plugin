@@ -119,6 +119,14 @@ def check_files(reporter: Reporter, repo_root: Path, hermes_home: Path, hermes_a
             hermes_home / "plugins/model-providers/google-antigravity/plugin.yaml",
             repo_root / "plugins/model-providers/google-antigravity/plugin.yaml",
         ),
+        (
+            hermes_agent_dir / "plugins/image_gen/google-antigravity/__init__.py",
+            repo_root / "plugins/image_gen/google-antigravity/__init__.py",
+        ),
+        (
+            hermes_agent_dir / "plugins/image_gen/google-antigravity/plugin.yaml",
+            repo_root / "plugins/image_gen/google-antigravity/plugin.yaml",
+        ),
     ]
     for installed, repo in pairs:
         compare_file(reporter, installed, repo)
