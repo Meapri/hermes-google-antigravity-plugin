@@ -218,9 +218,21 @@ Example:
 ```bash
 export HERMES_GOOGLE_GROUNDING_SEARCH_ENABLED=true
 export HERMES_ANTIGRAVITY_GOOGLE_GROUNDING=always
+export HERMES_ANTIGRAVITY_GROUNDING_SUPPRESS_EXTERNAL_SEARCH_TOOLS=true
 export HERMES_ANTIGRAVITY_GROUNDING_SUPPRESS_FUNCTION_TOOLS=true
 hermes chat --provider google-antigravity -m gemini-3.5-flash-high \
   -q "오늘 기준 Gemini 최신 소식 검색해서 출처와 같이 요약해줘"
+```
+
+Hermes.app and other GUI-launched sessions on macOS do not necessarily inherit
+shell rc files such as `~/.zshrc` or `~/.bashrc`. For the GUI app, put the
+non-exported values in `~/.hermes/.env` and restart Hermes.app/dashboard:
+
+```dotenv
+HERMES_GOOGLE_GROUNDING_SEARCH_ENABLED=true
+HERMES_ANTIGRAVITY_GOOGLE_GROUNDING=always
+HERMES_ANTIGRAVITY_GROUNDING_SUPPRESS_EXTERNAL_SEARCH_TOOLS=true
+HERMES_ANTIGRAVITY_GROUNDING_SUPPRESS_FUNCTION_TOOLS=true
 ```
 
 Grounding and Google One AI credit routing are independent. Grounding controls
