@@ -9,6 +9,23 @@ client id/secret extracted from `agy`; secrets are never committed or printed.
 Existing `agy` CLI token files are still reused when available, but browser
 Google OAuth login is the primary fallback.
 
+## Codex Plugin Version
+
+Codex users should now use
+[Google Antigravity Codex](https://github.com/Meapri/google-antigravity-codex).
+It is a separate Codex plugin plus MCP server that works without Hermes,
+`agy`, runtime monkey patches, repair hooks, or service restarts.
+
+```bash
+codex plugin marketplace add Meapri/google-antigravity-codex --ref main
+codex plugin add google-antigravity-codex@google-antigravity-codex
+```
+
+For one-shot agent setup, paste the new repository's
+[Agent Handoff Prompt](https://github.com/Meapri/google-antigravity-codex#agent-handoff-prompt)
+into Codex or another coding agent. This Hermes provider repository remains the
+Hermes-specific install path.
+
 ## How it works
 
 ```
