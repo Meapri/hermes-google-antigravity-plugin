@@ -871,6 +871,80 @@ class AntigravityClient:
             },
         }
 
+    def grounded_search(self, *, query: str, model: str = "", limit: int = 5) -> dict[str, Any]:
+        """Google-Search-grounded query via generateContent. Returns
+        {"answer": str, "queries": [str], "results": [{"title","url","snippet"}]}."""
+        query = (query or "").strip()
+        if not query:
+            return {"answer": "", "queries": [], "results": []}
+        system = (
+            "You are a web search assistant. Use Google Search grounding to find "
+            "current, factual information answering the user's query, and cite sources."
+        )
+        request = self._build_gemini_request(system=system, prompt=query, memories=[], grounding=True)
+        data = self.generate_raw(request=request, model=model or self.settings.model)
+        return {
+            "answer": self._extract_text(data),
+            "queries": self._extract_search_queries(data),
+            "results": self._extract_grounding_results(data, limit=limit),
+        }
+
+    def _grounding_metadata(self, data: dict[str, Any]) -> dict[str, Any]:
+        inner = data.get("response") if isinstance(data.get("response"), dict) else data
+        candidates = inner.get("candidates") if isinstance(inner, dict) else None
+        if not isinstance(candidates, list) or not candidates:
+            return {}
+        for key in ("groundingMetadata", "grounding_metadata"):
+            md = candidates[0].get(key)
+            if isinstance(md, dict):
+                return md
+        return {}
+
+    def _extract_search_queries(self, data: dict[str, Any]) -> list[str]:
+        md = self._grounding_metadata(data)
+        for key in ("webSearchQueries", "web_search_queries"):
+            q = md.get(key)
+            if isinstance(q, list):
+                return [str(x) for x in q if x]
+        return []
+
+    def _extract_grounding_results(self, data: dict[str, Any], *, limit: int = 5) -> list[dict[str, str]]:
+        md = self._grounding_metadata(data)
+        chunks = None
+        for key in ("groundingChunks", "grounding_chunks", "chunks"):
+            if isinstance(md.get(key), list):
+                chunks = md[key]
+                break
+        if not chunks:
+            return []
+        snippets: dict[int, list[str]] = {}
+        for key in ("groundingSupports", "grounding_supports", "supports"):
+            supports = md.get(key)
+            if isinstance(supports, list):
+                for sup in supports:
+                    if not isinstance(sup, dict):
+                        continue
+                    seg = ((sup.get("segment") or {}).get("text")) or sup.get("text") or ""
+                    idxs = sup.get("groundingChunkIndices") or sup.get("grounding_chunk_indices") or []
+                    for i in idxs:
+                        if seg and isinstance(i, int):
+                            snippets.setdefault(i, []).append(str(seg).strip())
+                break
+        results: list[dict[str, str]] = []
+        for i, chunk in enumerate(chunks):
+            if not isinstance(chunk, dict):
+                continue
+            web = chunk.get("web") if isinstance(chunk.get("web"), dict) else {}
+            url = web.get("uri") or web.get("url") or chunk.get("uri") or chunk.get("url") or ""
+            title = web.get("title") or chunk.get("title") or ""
+            if not url:
+                continue
+            snip = " ".join(snippets.get(i, []))[:500]
+            results.append({"title": str(title) or str(url), "url": str(url), "snippet": snip})
+            if len(results) >= limit:
+                break
+        return results
+
     def _extract_text(self, data: dict[str, Any]) -> str:
         inner = data.get("response") if isinstance(data.get("response"), dict) else data
         candidates = inner.get("candidates") if isinstance(inner, dict) else None

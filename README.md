@@ -104,6 +104,28 @@ image_gen:
 Models: `gemini-3-pro-image` (Nano Banana Pro), `gemini-3.1-flash-image`
 (Nano Banana), `gemini-2.5-flash-image`.
 
+## Web search (Google grounding)
+
+Also ships a `web_search` backend plugin (`plugins/web/google_grounding/`) that
+answers queries with **Google Search grounding** through Antigravity's
+`gemini-3.5-flash-high` — cited, current sources, no API key. It calls the
+vendored client's `grounded_search()` (which adds `tools=[{"google_search": {}}]`
+to the generateContent request) and maps the response's `groundingChunks` to
+Hermes search results.
+
+Enable + activate in `~/.hermes/config.yaml`:
+
+```yaml
+plugins:
+  enabled:
+    - web/google_grounding
+web:
+  search_backend: google_grounding
+```
+
+Search-only (cited source URLs + snippets); page-content extraction stays on
+your configured `web.extract_backend`.
+
 ## Login notes
 
 `run_antigravity_login()` uses the PKCE authorization-code flow (the device-code
