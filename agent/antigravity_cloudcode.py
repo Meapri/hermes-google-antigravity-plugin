@@ -27,9 +27,13 @@ ANTIGRAVITY_VERSION = "2.0.1"
 GEMINI_CLI_USER_AGENT = "google-api-nodejs-client/9.15.1 (gzip)"
 GEMINI_X_GOOG_API_CLIENT = "gl-node/24.0.0"
 GROUNDING_HINT = (
-    "Google Search grounding is enabled for every Antigravity Proxy reply. "
-    "Use grounded search results for current facts, verify claims when evidence is available, "
-    "separate confirmed facts from inference, and include short source URLs only when they help the reply."
+    "Google Search grounding is enabled for every reply. Use grounded search for "
+    "current facts and ALWAYS prefer the LATEST information as of today. Do NOT rely "
+    "on your prior/training knowledge, which may be outdated: newer product "
+    "generations, versions, models, prices, and releases may exist that you are "
+    "unaware of. If search results show something newer than you expected, trust the "
+    "search results. Verify claims against evidence, separate confirmed facts from "
+    "inference, and include short source URLs only when they help the reply."
 )
 GROUNDING_RETRY_HINT = (
     "\n\n[Google Search grounding 재확인]\n"
@@ -834,7 +838,11 @@ class AntigravityClient:
                 "사용자가 묻지 않은 과거 화제를 먼저 꺼내지 마라.\n" + memory_text
             )
         if grounding:
-            full_system += "\n\n" + GROUNDING_HINT
+            _today = datetime.now().astimezone().strftime("%Y-%m-%d")
+            full_system += chr(10) + chr(10) + GROUNDING_HINT + chr(10) + (
+                f"Today is {_today}; prefer the latest info as of today and trust "
+                "fresh search results over prior assumptions."
+            )
         request: dict[str, Any] = {
             "systemInstruction": {"role": "system", "parts": [{"text": full_system}]},
             "contents": [{"role": "user", "parts": [{"text": prompt}]}],
@@ -877,9 +885,17 @@ class AntigravityClient:
         query = (query or "").strip()
         if not query:
             return {"answer": "", "queries": [], "results": []}
+        today = datetime.now().astimezone().strftime("%Y-%m-%d")
         system = (
-            "You are a web search assistant. Use Google Search grounding to find "
-            "current, factual information answering the user's query, and cite sources."
+            f"You are a real-time web search assistant. Today is {today}. "
+            "ALWAYS use Google Search to answer; never rely on your own prior/training "
+            "knowledge, which is outdated. Products, versions, models, prices, rankings "
+            "and releases change over time and newer generations may exist that you are "
+            "unaware of. Search for the CURRENT, LATEST state as of today, prefer recently "
+            "published sources, and check release dates. If results show a newer "
+            "version/model/product than you expected, TRUST the search results over your "
+            "assumptions. For latest/newest/current/comparison questions, explicitly "
+            "search for the most recent generation and list what exists now. Cite sources."
         )
         request = self._build_gemini_request(system=system, prompt=query, memories=[], grounding=True)
         data = self.generate_raw(request=request, model=model or self.settings.model)
