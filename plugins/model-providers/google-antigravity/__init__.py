@@ -1,66 +1,29 @@
-"""Google Antigravity OAuth provider profile for Hermes Agent.
+"""Google Antigravity model-provider (Cloud Code PA v1internal, Google OAuth).
 
-This plugin registers the `google-antigravity` model provider profile. Runtime
-OAuth and transport support is supplied by the companion Hermes core patch in
-this repository until Hermes exposes plugin hooks for custom OAuth resolvers and
-model clients.
+Native Hermes provider — request path handled by AntigravityTransport
+(api_mode='antigravity_generate'). Lives in $HERMES_HOME/plugins so it survives
+`hermes update`.
 """
-
-from __future__ import annotations
-
-from typing import Any
-
 from providers import register_provider
 from providers.base import ProviderProfile
 
-
-class GoogleAntigravityProfile(ProviderProfile):
-    """Google Antigravity OAuth profile.
-
-    Antigravity uses the Cloud Code PA transport shape, but with Antigravity
-    OAuth credentials, headers, model IDs, and UI thinking tier semantics.
-    """
-
-    def build_extra_body(
-        self, *, session_id: str | None = None, **context: Any
-    ) -> dict[str, Any]:
-        extra: dict[str, Any] = {}
-        if session_id:
-            extra["session_id"] = session_id
-        model = str(context.get("model") or "")
-        normalized = model.strip().lower()
-        vendor, sep, bare = normalized.partition("/")
-        if sep and vendor in {"google", "gemini"}:
-            normalized = bare.strip() or normalized
-        if normalized.startswith("gemini-") and "pro" in normalized:
-            if normalized.endswith("-high"):
-                extra["thinking_config"] = {"thinkingLevel": "high"}
-            if normalized.endswith("-low"):
-                extra["thinking_config"] = {"thinkingLevel": "low"}
-        return extra
-
-
-google_antigravity = GoogleAntigravityProfile(
+google_antigravity = ProviderProfile(
     name="google-antigravity",
-    aliases=("antigravity", "antigravity-oauth"),
-    display_name="Google Antigravity (OAuth)",
-    description="Google Antigravity via OAuth + Code Assist; no Gemini CLI dependency.",
+    aliases=("antigravity", "google-antigravity-oauth"),
     api_mode="chat_completions",
-    env_vars=(),
-    base_url="cloudcode-pa://antigravity",
+    display_name="Google Antigravity (Cloud Code)",
+    description="Google Antigravity via Cloud Code PA (OAuth)",
+    signup_url="https://antigravity.google/",
+    base_url="https://cloudcode-pa.googleapis.com",
     auth_type="oauth_external",
-    supports_health_check=False,
+    supports_vision=True,
     fallback_models=(
-        "gemini-3.5-flash-high",
-        "gemini-3.5-flash-medium",
-        "gemini-3.1-pro-high",
-        "gemini-3.1-pro-low",
-        "claude-sonnet-4-6-thinking",
-        "claude-opus-4-6-thinking",
-        "gpt-oss-120b-medium",
-        "gemini-3-flash",
-        "claude-sonnet-4-6",
+        "gemini-3.5-flash-high", "gemini-3.5-flash-medium", "gemini-3.5-flash-low",
+        "gemini-3.5-flash-extra-low",
+        "gemini-3.1-pro-high", "gemini-3.1-pro-low",
+        "gemini-3-flash-high", "gemini-3-flash-low",
+        "claude-opus-4-6-thinking", "claude-sonnet-4-6-thinking",
+        "gpt-oss-120b",
     ),
 )
-
 register_provider(google_antigravity)
