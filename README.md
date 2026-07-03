@@ -81,6 +81,29 @@ Available models (curated): `gemini-3.1-pro-high/low`, `gemini-3.5-flash-high/me
 `gemini-3-flash-high/low`, `claude-opus-4-6-thinking`, `claude-sonnet-4-6-thinking`,
 `gpt-oss-120b`.
 
+## Image generation
+
+Also ships an `image_gen` backend plugin
+(`plugins/image_gen/google-antigravity/`) exposing Antigravity's Gemini image
+models (Nano Banana family) over the same OAuth session. It delegates to the
+vendored client's `generate_image()` and lists models **live** from the backend
+(`fetch_available_image_models`), with a curated fallback when the live catalog
+is unavailable.
+
+Enable + activate in `~/.hermes/config.yaml`:
+
+```yaml
+plugins:
+  enabled:
+    - image_gen/google-antigravity
+image_gen:
+  provider: google-antigravity
+  model: gemini-3.1-flash-image
+```
+
+Models: `gemini-3-pro-image` (Nano Banana Pro), `gemini-3.1-flash-image`
+(Nano Banana), `gemini-2.5-flash-image`.
+
 ## Login notes
 
 `run_antigravity_login()` uses the PKCE authorization-code flow (the device-code

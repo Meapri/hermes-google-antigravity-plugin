@@ -393,6 +393,7 @@ class AntigravityClient:
         output_dir: Path,
         aspect_ratio: str = "square",
         image_size: str = "1K",
+        model: str = "",
     ) -> Path:
         prompt = prompt.strip()
         if not prompt:
@@ -404,7 +405,7 @@ class AntigravityClient:
         request = self._build_image_request(prompt=prompt, aspect_ratio=aspect_ratio, image_size=image_size)
         wrapped = {
             "project": project_id,
-            "model": self.settings.image_model,
+            "model": model or self.settings.image_model,
             "request": request,
             "requestType": "agent",
             "userAgent": "antigravity",
@@ -436,6 +437,21 @@ class AntigravityClient:
                 path = path.with_suffix("." + IMAGE_MIME_EXTENSIONS.get(mime, extension or "png"))
             path.write_bytes(base64.b64decode(image_data))
         return path
+
+    def fetch_available_image_models(self) -> list[str]:
+        """Live image-model catalog from the backend (v1internal:fetchAvailableModels).
+        Returns image model IDs, or [] on any failure so callers can fall back."""
+        creds = self._valid_credentials()
+        project_id = self._project_id or creds.project_id or self._discover_project(creds.access_token)
+        if not project_id:
+            return []
+        headers = self._antigravity_headers(creds.access_token)
+        body = {"project": project_id, "requestId": "images-" + str(uuid.uuid4())}
+        r = self._http.post(f"{ENDPOINT}/v1internal:fetchAvailableModels", json=body, headers=headers, timeout=30.0)
+        r.raise_for_status()
+        payload = r.json()
+        ids = payload.get("imageGenerationModelIds") or payload.get("image_generation_model_ids") or []
+        return [str(x) for x in ids] if isinstance(ids, list) else []
 
     def describe_image(self, *, image_path: Path, prompt: str = "") -> str:
         return self.describe_media(
