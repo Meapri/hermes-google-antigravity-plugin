@@ -44,9 +44,40 @@ hermes auth refresh google-antigravity
 
 Installation commands above are instructions, not actions already performed by
 this change. Do not apply `patches/hermes-agent-antigravity-core.patch` or copy
-`agent/antigravity_*.py` into Hermes. Those files and the existing image/search
-plugins are retained as **legacy** implementations, not used by this native model
-provider. Their installation and compatibility are outside this update.
+`agent/antigravity_*.py` into Hermes. Those files and the image plugin are
+retained as **legacy** implementations, not used by this native model provider.
+
+## Google Search grounding web provider
+
+`plugins/web/google_grounding` is a Hermes `web_search` backend built on the
+native provider above. It reuses the pooled `google-antigravity` OAuth credential
+(Hermes refreshes it) and the provider's `create_client`, calls a Gemini model
+with `tools=[{"google_search": {}}]`, and maps grounding chunks/supports to the
+standard rows `{title, url, description, position}`. Google redirect links are
+resolved to the cited page URL. The model's grounded answer and the search
+queries Google ran are added as `data.answer` and `data.search_queries`.
+Search-only: extraction stays on your configured extract backend.
+
+```sh
+HOME_DIR="${HERMES_HOME:-$HOME/.hermes}"
+mkdir -p "$HOME_DIR/plugins/web/google_grounding"
+cp plugins/web/google_grounding/{__init__.py,plugin.yaml} "$HOME_DIR/plugins/web/google_grounding/"
+hermes plugins enable web/google_grounding
+hermes config set web.search_backend google_grounding   # optional: make it the search backend
+```
+
+Optional `config.yaml`:
+
+```yaml
+web:
+  google_grounding:
+    model: gemini-3.8-flash-low   # default; any Gemini id in the Antigravity catalog
+    timeout: 90
+    resolve_urls: true
+```
+
+Requires the `google-antigravity` model provider plugin installed and logged in.
+Verified on Hermes v0.22.5 through `tools.web_tools.web_search_tool`.
 
 ## Transport and catalog
 

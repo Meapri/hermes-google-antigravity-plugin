@@ -1,6 +1,6 @@
 name: web-google-grounding
-version: 1.0.0
-description: "Google Search grounding web search via Google Antigravity (gemini-3.5-flash-high). No API key — reuses the Antigravity OAuth session."
+version: 2.0.0
+description: "Google Search grounding web search through the native google-antigravity model provider (Gemini on Cloud Code PA). No API key; uses `hermes auth add google-antigravity`."
 author: Meapri
 kind: backend
 provides_web_providers:
