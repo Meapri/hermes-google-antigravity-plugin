@@ -71,7 +71,7 @@ Optional `config.yaml`:
 ```yaml
 web:
   google_grounding:
-    model: gemini-3.8-flash-low   # default; any Gemini id in the Antigravity catalog
+    mode: fast                    # fast (3.5-flash-lite x2 parallel) | deep (3.8-flash-high)
     timeout: 90
     resolve_urls: true
 ```
