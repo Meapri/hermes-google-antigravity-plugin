@@ -1,0 +1,5 @@
+name: google-antigravity
+version: 1.0.0
+description: "Google Antigravity image generation backend (Gemini image models via Google-account OAuth). Text-to-image, live model catalog with curated fallback."
+author: Meapri
+kind: backend
