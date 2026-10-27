@@ -8,24 +8,29 @@ Auth and transport come from the ``google-antigravity`` model-provider plugin in
 this repository (``hermes auth add google-antigravity``): Hermes owns the pooled
 OAuth token and its refresh. No API key, proxy, or Hermes core patch.
 
-Modes:
+Tiers (``mode: auto`` picks one per query with a rule-based router, no extra LLM call):
 
-- ``fast`` (default): the latest non-thinking Flash Lite, two differently-phrased
-  grounding requests in parallel (plain query + "search from several angles"),
-  merged, redirect links resolved and de-duplicated. Measured ~4 s median.
-- ``deep``: one request on a thinking Flash model with a recency-focused system
-  prompt. Slower (~10 s) but writes a better grounded ``answer``.
+- ``fast``: gemini-3.5-flash-lite, two differently-phrased grounding requests in
+  parallel, merged. Navigational / simple lookups. Escalates once to
+  ``standard`` when it returns fewer than 2 sources.
+- ``standard``: gemini-3.8-flash-high. Freshness and exact values
+  (latest / version / price / today / release ...).
+- ``deep``: gemini-4-argon-low. Comparison, analysis, "why/how", long or
+  multi-part questions.
+
+Redirect links are resolved and de-duplicated; ``data.tier`` reports the tier used.
 
 Config (optional, ``config.yaml``)::
 
     web:
       search_backend: google_grounding
       google_grounding:
-        mode: fast                      # fast | deep
+        mode: auto                      # auto | fast | standard | deep
         fast_model: gemini-3.5-flash-lite
-        deep_model: gemini-3.8-flash-high
+        standard_model: gemini-3.8-flash-high
+        deep_model: gemini-4-argon-low
         timeout: 60
-        resolve_urls: true              # turn Google redirect links into the cited page URLs
+        resolve_urls: true
 
 Search-only: grounding returns cited URLs and support snippets, not page bodies,
 so extraction stays on the configured extract backend.
@@ -45,9 +50,35 @@ from plugins.web._common import (
 logger = logging.getLogger(__name__)
 
 PROVIDER = "google-antigravity"
-DEFAULT_MODE = "fast"
-DEFAULT_FAST_MODEL = "gemini-3.5-flash-lite"
-DEFAULT_DEEP_MODEL = "gemini-3.8-flash-high"
+DEFAULT_MODE = "auto"
+TIER_MODELS = {
+    "fast": "gemini-3.5-flash-lite",       # non-thinking, 2 parallel legs
+    "standard": "gemini-3.8-flash-high",  # thinking Flash, freshness / exact values
+    "deep": "gemini-4-argon-low",           # comparison / analysis / multi-part questions
+}
+
+# Rule-based router (no extra LLM call). Order matters: deep beats standard beats fast.
+_DEEP_MARKERS = (
+    "비교", "차이", "장단점", "분석", "원인", "이유", "왜 ", "어떻게 하면", "추천", "전략", "정리해",
+    " vs ", " vs.", "versus", "compare", "comparison", "difference between", "pros and cons",
+    "trade-off", "tradeoff", "why ", "how does", "how do i", "explain", "analysis", "best way",
+)
+_STANDARD_MARKERS = (
+    "최신", "버전", "릴리스", "출시", "가격", "요금", "오늘", "현재", "지금", "뉴스", "발표", "업데이트",
+    "일정", "날짜", "몇 ", "얼마", "lts", "latest", "version", "release", "changelog", "price",
+    "pricing", "today", "current", "news", "announce", "update", "schedule", "when ", "how much",
+    "how many",
+)
+
+
+def route_tier(query: str) -> str:
+    """Pick fast / standard / deep from the query text alone (cheap, deterministic)."""
+    q = f" {query.lower()} "
+    if any(m in q for m in _DEEP_MARKERS) or len(query) > 120 or query.count("?") + query.count("？") >= 2:
+        return "deep"
+    if any(m in q for m in _STANDARD_MARKERS):
+        return "standard"
+    return "fast"
 DEFAULT_TIMEOUT = 60.0
 _SNIPPET_CHARS = 500
 _REDIRECT_PREFIX = "https://vertexaisearch.cloud.google.com/grounding-api-redirect/"
@@ -254,27 +285,33 @@ class GoogleGroundingWebSearchProvider(BaseWebSearchProvider):
                 timeout = DEFAULT_TIMEOUT
             client = _client(timeout)
             today = _today()
-            if mode == "deep":
-                model = str(cfg.get("deep_model") or cfg.get("model") or "").strip() or DEFAULT_DEEP_MODEL
-                logger.info("Google grounding (deep) search: '%s' (limit=%d, model=%s)", q, n, model)
-                cands = [_ground(client, model, _request(q, _DEEP_SYSTEM.format(today=today)), timeout)]
-                row_lists = [_rows(_metadata(cands[0]), n)]
-            else:
-                model = str(cfg.get("fast_model") or "").strip() or DEFAULT_FAST_MODEL
-                logger.info("Google grounding (fast) search: '%s' (limit=%d, model=%s)", q, n, model)
+            tier = route_tier(q) if mode == "auto" else mode
+            if tier not in TIER_MODELS:
+                tier = "fast"
+            model = str(cfg.get(f"{tier}_model") or "").strip() or TIER_MODELS[tier]
+            logger.info("Google grounding (%s/%s) search: '%s' (limit=%d, model=%s)", mode, tier, q, n, model)
+            if tier == "fast":
                 reqs = [_request(q, None), _request(q, _BROAD_SYSTEM.format(today=today))]
-                with ThreadPoolExecutor(max_workers=2) as pool:
-                    futures = [pool.submit(_ground, client, model, r, timeout) for r in reqs]
-                    cands, errors = [], []
-                    for f in futures:
-                        try:
-                            cands.append(f.result())
-                        except Exception as exc:  # one leg failing must not sink the search
-                            errors.append(exc)
-                if not cands:
-                    raise errors[0]
-                # Over-fetch before resolving so de-duplication after resolution can still fill `n`.
-                row_lists = [_rows(_metadata(c), SEARCH_LIMIT_CAP) for c in cands]
+            else:
+                reqs = [_request(q, _DEEP_SYSTEM.format(today=today))]
+            with ThreadPoolExecutor(max_workers=len(reqs)) as pool:
+                futures = [pool.submit(_ground, client, model, r, timeout) for r in reqs]
+                cands, errors = [], []
+                for f in futures:
+                    try:
+                        cands.append(f.result())
+                    except Exception as exc:  # one leg failing must not sink the search
+                        errors.append(exc)
+            if not cands:
+                raise errors[0]
+            # Over-fetch before resolving so de-duplication after resolution can still fill `n`.
+            row_lists = [_rows(_metadata(c), SEARCH_LIMIT_CAP) for c in cands]
+            if tier == "fast" and mode == "auto" and sum(len(r) for r in row_lists) < 2:
+                # Thin fast result: escalate once to standard instead of returning almost nothing.
+                tier, model = "standard", str(cfg.get("standard_model") or "").strip() or TIER_MODELS["standard"]
+                logger.info("Google grounding: fast returned <2 sources, escalating to %s", model)
+                cands = [_ground(client, model, _request(q, _DEEP_SYSTEM.format(today=today)), timeout)]
+                row_lists = [_rows(_metadata(cands[0]), SEARCH_LIMIT_CAP)]
             rows = _merge(row_lists, SEARCH_LIMIT_CAP)
             if cfg.get("resolve_urls", True):
                 rows = _resolve_urls(rows)
@@ -287,6 +324,7 @@ class GoogleGroundingWebSearchProvider(BaseWebSearchProvider):
                 queries += [x for x in _queries(_metadata(c)) if x not in queries]
             if queries:
                 result["data"]["search_queries"] = queries
+            result["data"]["tier"] = tier
             return result
 
         return run_search("Google grounding", logger, body)

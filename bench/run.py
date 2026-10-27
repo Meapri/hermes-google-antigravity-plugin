@@ -16,7 +16,7 @@ out = open(HERE + "results.jsonl", "a")
 
 
 def run(cfg, q):
-    if cfg in ("gg-fast", "gg-deep"):
+    if cfg.startswith("gg-"):
         gg._web_config = lambda m=cfg[3:]: {"mode": m}
         return gg_prov.search(q, 5)
     return get_provider(cfg).search(q, 5)
@@ -41,7 +41,7 @@ for item in GOLD:
             r = run(cfg, item["q"])
         except Exception as e:
             r = {"success": False, "error": str(e)}
-        rec = {"cfg": cfg, "id": item["id"], "cat": item["cat"], "sec": round(time.time() - t, 2),
+        rec = {"tier": ((r.get("data") or {}).get("tier")), "cfg": cfg, "id": item["id"], "cat": item["cat"], "sec": round(time.time() - t, 2),
                "ok": bool(r.get("success")), "err": (r.get("error") or "")[:150]}
         if rec["ok"]:
             rec.update(grade(item, r))

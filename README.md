@@ -71,13 +71,20 @@ Optional `config.yaml`:
 ```yaml
 web:
   google_grounding:
-    mode: fast                    # fast (3.5-flash-lite x2 parallel) | deep (3.8-flash-high)
+    mode: auto                    # auto | fast (3.5-flash-lite x2) | standard (3.8-flash-high) | deep (4-argon-low)
     timeout: 90
     resolve_urls: true
 ```
 
 Requires the `google-antigravity` model provider plugin installed and logged in.
 Verified on Hermes v0.22.5 through `tools.web_tools.web_search_tool`.
+
+## Search benchmark
+
+`bench/` holds a 28-query golden set (freshness, navigational, stable facts, Korean,
+tech news, long-tail, analysis) graded on expected values and official domains.
+2026-10-26 run (`bench/results_tiers.jsonl`): fast 3.8 s median / 38 of 39 checks,
+standard 8.4 s / 39 of 39, deep 14.9 s / 39 of 39, auto 6.6 s (p90 21.1 s) / 37 of 39.
 
 ## Transport and catalog
 
