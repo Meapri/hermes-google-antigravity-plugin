@@ -166,5 +166,45 @@ class NativeTests(unittest.TestCase):
                     plugin.google_antigravity.refresh_credential(entry)
                 self.assertEqual(caught.exception.code, 'invalid_grant')
 
+    def test_picker_catalog_drops_router_slots_and_leads_with_curated(self):
+        # The model pickers read live ids: internal router slots (chat_*/tab_*) are not models.
+        from unittest.mock import patch
+        catalog = {
+            'chat_20706': {'model': 'MODEL_CHAT_20706'},
+            'tab_flash_lite_preview': {'model': 'MODEL_PLACEHOLDER_M9'},
+            'gemini-3.8-flash-tiered': {'model': 'MODEL_PLACEHOLDER_M322'},
+            'gemini-3.8-flash-high': {'displayName': 'Gemini 3.8 Flash (High)'},
+            'claude-opus-5-5-high': {'displayName': 'Claude Opus 5.5 (High)'},
+        }
+        with patch.object(plugin, '_pooled_token', return_value='token'), \
+                patch.object(plugin.google_antigravity, 'fetch_catalog', return_value=catalog):
+            ids = plugin._picker_catalog('google-antigravity', False)
+        self.assertEqual(ids[:2], ['gemini-3.8-flash-tiered', 'gemini-3.8-flash-high'])
+        self.assertIn('claude-opus-5-5-high', ids)
+        self.assertNotIn('chat_20706', ids)
+        self.assertNotIn('tab_flash_lite_preview', ids)
+
+    def test_picker_catalog_degrades_to_curated_floor_without_credentials(self):
+        # No pooled row (signed out / expired): None so the caller serves fallback_models.
+        from unittest.mock import patch
+        with patch.object(plugin, '_pooled_token', return_value=''):
+            self.assertIsNone(plugin._picker_catalog('google-antigravity', False))
+        self.assertTrue(plugin.google_antigravity.fallback_models)
+
+    def test_fetch_models_falls_back_to_the_pooled_token(self):
+        # `hermes model` / `/model` pass no key; a live catalog still needs one.
+        from unittest.mock import patch
+        seen = {}
+
+        def fake_catalog(*, api_key=None, timeout=8.0, transport=None):
+            seen['api_key'] = api_key
+            return {'gemini-4-argon-medium': {}}
+
+        with patch.object(plugin, '_pooled_token', return_value='pooled-token'), \
+                patch.object(plugin.google_antigravity, 'fetch_catalog', side_effect=fake_catalog):
+            models = plugin.google_antigravity.fetch_models()
+        self.assertEqual(models, ['gemini-4-argon-medium'])
+        self.assertEqual(seen['api_key'], 'pooled-token')
+
 if __name__ == '__main__':
     unittest.main()
