@@ -16,6 +16,24 @@ SPEC.loader.exec_module(plugin)
 
 
 class NativeTests(unittest.TestCase):
+    def test_oauth_client_id_has_default_without_local_credentials(self):
+        from unittest.mock import patch
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as home, patch('hermes_constants.get_hermes_home', return_value=home), patch.dict(os.environ, {'GOOGLE_ANTIGRAVITY_CLIENT_ID': '', 'GOOGLE_ANTIGRAVITY_CLIENT_SECRET': ''}):
+            self.assertTrue(plugin.auth._config().client_id)
+
+    def test_oauth_client_id_override_precedes_default(self):
+        from unittest.mock import patch
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as home, patch('hermes_constants.get_hermes_home', return_value=home), patch.dict(os.environ, {'GOOGLE_ANTIGRAVITY_CLIENT_ID': 'custom-client', 'GOOGLE_ANTIGRAVITY_CLIENT_SECRET': ''}):
+            self.assertEqual(plugin.auth._config().client_id, 'custom-client')
+
+    def test_oauth_client_secret_has_default_without_local_credentials(self):
+        from unittest.mock import patch
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as home, patch('hermes_constants.get_hermes_home', return_value=home), patch.dict(os.environ, {'GOOGLE_ANTIGRAVITY_CLIENT_ID': '', 'GOOGLE_ANTIGRAVITY_CLIENT_SECRET': ''}):
+            self.assertTrue(plugin.auth._config().extra_token_params.get('client_secret'))
+
     def test_profile_client_sends_native_envelope(self):
         seen = []
         def backend(request):

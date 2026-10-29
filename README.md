@@ -15,8 +15,8 @@ Requires a recent Hermes with `ProviderProfile.create_client`, provider-owned
 [official provider plugin documentation](https://hermes-agent.nousresearch.com/docs/developer-guide/model-provider-plugin).
 No Hermes core edits are required.
 
-First configure the OAuth client described below. Then, from this repository root,
-install the four files of the model provider into the profile you intend to use:
+From this repository root, install the four model-provider files into the
+profile you intend to use:
 
 ```sh
 HOME_DIR="${HERMES_HOME:-$HOME/.hermes}"
@@ -27,10 +27,16 @@ hermes auth add google-antigravity
 hermes chat --provider google-antigravity --model gemini-3.8-flash-tiered -q 'Hello'
 ```
 
-Set `GOOGLE_ANTIGRAVITY_CLIENT_ID` and, if required by the OAuth registration,
-`GOOGLE_ANTIGRAVITY_CLIENT_SECRET` in your secure environment. Alternatively supply
-`$HERMES_HOME/auth/google_antigravity_client.json` with `client_id` and
-`client_secret` (restrict permissions to 0600). Client credentials are not shipped.
+The plugin ships default OAuth application credentials (client ID and secret)
+taken from the upstream CLIProxyAPI Antigravity integration, where both values
+are already public. This is a desktop-type public OAuth client, which Google's
+desktop-app guidance does not treat as confidential, so login works without any
+prerequisite setup. To use your own registration instead, set
+`GOOGLE_ANTIGRAVITY_CLIENT_ID` / `GOOGLE_ANTIGRAVITY_CLIENT_SECRET` or supply
+`client_id` / `client_secret` in `$HERMES_HOME/auth/google_antigravity_client.json`
+(restrict the file to 0600). Environment variables take precedence over the
+file, and both override the built-in defaults. User access and refresh tokens
+remain Hermes-managed secrets.
 The OAuth client must permit `http://127.0.0.1:51121/auth/callback`. The provider
 uses Hermes' browser-based PKCE flow; login success depends on your OAuth
 registration and account. Hermes owns pooled tokens, expiry,
