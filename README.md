@@ -15,8 +15,8 @@ Requires a recent Hermes with `ProviderProfile.create_client`, provider-owned
 [official provider plugin documentation](https://hermes-agent.nousresearch.com/docs/developer-guide/model-provider-plugin).
 No Hermes core edits are required.
 
-From this repository root, install **only** the model-provider directory into the
-profile you intend to use:
+First configure the OAuth client described below. Then, from this repository root,
+install the four files of the model provider into the profile you intend to use:
 
 ```sh
 HOME_DIR="${HERMES_HOME:-$HOME/.hermes}"
@@ -31,11 +31,16 @@ Set `GOOGLE_ANTIGRAVITY_CLIENT_ID` and, if required by the OAuth registration,
 `GOOGLE_ANTIGRAVITY_CLIENT_SECRET` in your secure environment. Alternatively supply
 `$HERMES_HOME/auth/google_antigravity_client.json` with `client_id` and
 `client_secret` (restrict permissions to 0600). Client credentials are not shipped.
-The OAuth client must permit `http://127.0.0.1:51121/auth/callback`; this generic
-Hermes PKCE callback differs from the legacy localhost callback. Browser login
-with your OAuth registration was not exercised here. Hermes owns pooled tokens,
-expiry, refresh, status and logout; this plugin never imports or modifies agy's
-credential file automatically.
+The OAuth client must permit `http://127.0.0.1:51121/auth/callback`. The provider
+uses Hermes' browser-based PKCE flow; login success depends on your OAuth
+registration and account. Hermes owns pooled tokens, expiry,
+refresh, status and logout; this plugin never imports or modifies agy's credential
+file automatically. Do not share OAuth credentials, callback URLs or tokens.
+
+On a headless remote host, start `hermes auth add google-antigravity` there and
+forward `127.0.0.1:51121` from your local machine to the same port on the host.
+Open the URL printed by Hermes in your local browser and complete authorization.
+The callback listener has a limited lifetime; restart the login if it expires.
 
 ```sh
 hermes auth status google-antigravity
@@ -44,8 +49,11 @@ hermes auth refresh google-antigravity
 
 Installation commands above are instructions, not actions already performed by
 this change. Do not apply `patches/hermes-agent-antigravity-core.patch` or copy
-`agent/antigravity_*.py` into Hermes. Those files and the image plugin are
-retained as **legacy** implementations, not used by this native model provider.
+`agent/antigravity_*.py` into Hermes. Those files, the image plugin, and
+`plugins/model-providers/google-antigravity/login.py` are retained as **legacy**
+implementations, not used by this native model provider. In particular, do not
+use the legacy `login.py` in place of `hermes auth add`: it writes a different
+credential file rather than registering a credential in the Hermes pool.
 
 ## Google Search grounding web provider
 
@@ -72,7 +80,7 @@ Optional `config.yaml`:
 web:
   google_grounding:
     mode: auto                    # auto | fast (3.5-flash-lite x2) | standard (3.8-flash-high) | deep (4-argon-low)
-    timeout: 90
+    timeout: 60
     resolve_urls: true
 ```
 
@@ -103,6 +111,23 @@ context**, not agy's trajectory/checkpoint budget. Metadata exists in-process
 after a successful catalog fetch; no persistent/global context override is made.
 An absent credential or catalog failure does not invent a model list.
 
+### Context and compaction
+
+The Cloud Code catalog's context value is metadata, not proof that an input of
+that size will be accepted through this OAuth route. The plugin calls Cloud Code
+directly and does not use the `agy` CLI conversation manager, but Google may apply
+its own limits. Hermes also manages its own context and can compress a conversation
+before the advertised limit. Check the active profile's resolved model window and
+`compression` settings (including any per-model or absolute threshold) when
+diagnosing an early compaction. See the [Hermes context compression guide](https://hermes-agent.nousresearch.com/docs/developer-guide/context-compression-and-caching).
+A larger configured window or threshold does not increase the upstream limit.
+Verify large inputs for the specific model and account before relying on them;
+such tests consume quota.
+
+This provider is distinct from the `agy`-backed DirectSDK provider. It registers
+`google-antigravity` and the aliases `antigravity-native` and
+`google-antigravity-oauth`; it does not claim the bare `antigravity` alias.
+
 Cloud Code gates the catalog on the `User-Agent` header. Both catalog and
 generation requests send the agy CLI format
 (`antigravity/cli/<version> (aidev_client; os_type=…; arch=…; cl=…; auth_method=consumer)`).
@@ -122,8 +147,14 @@ continuation chains and concurrent sessions have not been live-validated.
 Use the Python interpreter from your installed Hermes environment (discover the
 runtime with `hermes --print-runtime-command`), with its dependencies available:
 
+The native-provider tests use `unittest`. The grounding tests use `pytest` and
+require it to be available alongside the installed Hermes dependencies. Set
+`HERMES_AGENT_SOURCE` to the path of your installed Hermes source tree; the
+default location below may differ in your installation.
+
 ```sh
-HERMES_AGENT_SOURCE="$HOME/.hermes/hermes-agent" python -m unittest discover -s tests -v
+HERMES_AGENT_SOURCE="$HOME/.hermes/hermes-agent" python -m unittest discover -s tests -p 'test_native_provider.py' -v
+HERMES_AGENT_SOURCE="$HOME/.hermes/hermes-agent" python -m pytest tests/test_google_grounding_rows.py
 # Explicit opt-in: bills/uses subscription quota; reads agy token, never refreshes it.
 python tests/live_smoke.py
 ```
