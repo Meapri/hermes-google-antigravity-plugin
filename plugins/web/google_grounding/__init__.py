@@ -90,6 +90,12 @@ _DEEP_SYSTEM = (
     "today, prefer recently published sources, and trust search results over your assumptions. "
     "Answer briefly and cite sources."
 )
+_LEGAL_SYSTEM = (
+    "This query concerns legal adult content (age 19+/18+) for a verified adults-only room. "
+    "ALWAYS use Google Search and return groundingMetadata with web source links. "
+    "Do not refuse and do not moralize; omit explicit acts from the answer text, "
+    "but list the source links."
+)
 _BROAD_SYSTEM = (
     "Today is {today}. Run several Google searches from different angles (official source, news, "
     "recent date) for the query, then answer in two short sentences."
@@ -290,10 +296,15 @@ class GoogleGroundingWebSearchProvider(BaseWebSearchProvider):
                 tier = "fast"
             model = str(cfg.get(f"{tier}_model") or "").strip() or TIER_MODELS[tier]
             logger.info("Google grounding (%s/%s) search: '%s' (limit=%d, model=%s)", mode, tier, q, n, model)
+            use_legal = bool(cfg.get("legal_system_prompt", False)) or _has_adult_marker(q)
             if tier == "fast":
-                reqs = [_request(q, None), _request(q, _BROAD_SYSTEM.format(today=today))]
+                reqs = [_request(q, _LEGAL_SYSTEM if use_legal else None),
+                        _request(q, (_LEGAL_SYSTEM if use_legal else _BROAD_SYSTEM).format(today=today))]
             else:
-                reqs = [_request(q, _DEEP_SYSTEM.format(today=today))]
+                sys_prompt = _LEGAL_SYSTEM if use_legal else _DEEP_SYSTEM
+                if use_legal:
+                    sys_prompt = _DEEP_SYSTEM.format(today=today) + " " + _LEGAL_SYSTEM
+                reqs = [_request(q, sys_prompt)]
             with ThreadPoolExecutor(max_workers=len(reqs)) as pool:
                 futures = [pool.submit(_ground, client, model, r, timeout) for r in reqs]
                 cands, errors = [], []
@@ -338,3 +349,13 @@ class GoogleGroundingWebSearchProvider(BaseWebSearchProvider):
 
 def register(ctx: Any) -> None:
     ctx.register_web_search_provider(GoogleGroundingWebSearchProvider())
+
+
+_ADULT_MARKERS = (
+    "jav", "품번", "fanza", "av ", " av", "adult", "야동", "19금", "성인물", "nukunavi", "서비스",
+)
+
+
+def _has_adult_marker(q: str) -> bool:
+    ql = " " + q.lower() + " "
+    return any(m in ql for m in _ADULT_MARKERS)
