@@ -338,7 +338,12 @@ class GoogleGroundingWebSearchProvider(BaseWebSearchProvider):
             result["data"]["tier"] = tier
             return result
 
-        return run_search("Google grounding", logger, body)
+        result = run_search("Google grounding", logger, body)
+        if _should_fallback(result):
+            fallback = _perplexity_fallback(query, limit)
+            if fallback is not None:
+                return fallback
+        return result
 
     def get_setup_schema(self) -> Dict[str, Any]:
         return setup_schema(
@@ -359,3 +364,46 @@ _ADULT_MARKERS = (
 def _has_adult_marker(q: str) -> bool:
     ql = " " + q.lower() + " "
     return any(m in ql for m in _ADULT_MARKERS)
+
+
+_FALLBACK_MIN_ROWS = 2
+
+
+def _should_fallback(result: Any) -> bool:
+    """True when grounding failed outright or returned too few sources to be useful."""
+    if not _web_config().get("perplexity_fallback", True):
+        return False
+    if not isinstance(result, dict) or not result.get("success"):
+        return True
+    data = result.get("data")
+    if not isinstance(data, dict):
+        return True
+    return len(data.get("web") or []) < _FALLBACK_MIN_ROWS
+
+
+def _perplexity_fallback(query: str, limit: int) -> Optional[Dict[str, Any]]:
+    """Serve a refused/thin/failed grounding call from Perplexity Search (the keyword
+    ``POST /search`` API — no LLM in the loop, no observed refusals) when a room key
+    exists. Never raises; returning None keeps the original result so the framework's
+    own keyless-ring rescue can still run."""
+    try:
+        from agent.web_search_provider import get_provider_env
+        if not get_provider_env("PERPLEXITY_API_KEY"):
+            return None
+        from agent.web_search_registry import get_provider
+        provider = get_provider("perplexity")
+        if provider is None:
+            return None
+        r = provider.search((query or "").strip(), limit)
+        data = (r.get("data") or {}) if isinstance(r, dict) else {}
+        if not (isinstance(r, dict) and r.get("success")) or not data.get("web"):
+            return None
+        data["tier"] = "perplexity_fallback"
+        data.setdefault("fallback_from", "google_grounding")
+        data["backend_error"] = ("Google grounding returned no usable sources for this query; "
+                                 "result served by Perplexity Search.")
+        logger.warning("Google grounding thin/failed; served by Perplexity Search fallback")
+        return r
+    except Exception as exc:
+        logger.debug("perplexity fallback skipped: %s", exc)
+        return None
