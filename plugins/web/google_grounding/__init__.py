@@ -297,6 +297,13 @@ class GoogleGroundingWebSearchProvider(BaseWebSearchProvider):
             model = str(cfg.get(f"{tier}_model") or "").strip() or TIER_MODELS[tier]
             logger.info("Google grounding (%s/%s) search: '%s' (limit=%d, model=%s)", mode, tier, q, n, model)
             use_legal = bool(cfg.get("legal_system_prompt", False)) or _has_adult_marker(q)
+            if use_legal and cfg.get("adult_prefer_perplexity", True):
+                # Adult queries burn 1-3 grounding legs (refusals + escalations + 60s deep
+                # timeouts) before yielding rows. Perplexity keyword Search returns rows in
+                # ~2s without refusals; serve adult queries from it first, grounding second.
+                fb = _perplexity_fallback(q, n)
+                if fb is not None:
+                    return fb
             if tier == "fast":
                 reqs = [_request(q, _LEGAL_SYSTEM if use_legal else None),
                         _request(q, (_LEGAL_SYSTEM if use_legal else _BROAD_SYSTEM).format(today=today))]
