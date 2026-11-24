@@ -28,7 +28,7 @@ Config (optional, ``config.yaml``)::
         mode: auto                      # auto | fast | standard | deep
         fast_model: gemini-3.5-flash-lite
         standard_model: gemini-3.8-flash-high
-        deep_model: gemini-4-argon-low
+        deep_model: gemini-4-neon-medium
         timeout: 60
         resolve_urls: true
 
@@ -54,7 +54,7 @@ DEFAULT_MODE = "auto"
 TIER_MODELS = {
     "fast": "gemini-3.5-flash-lite",       # non-thinking, 2 parallel legs
     "standard": "gemini-3.8-flash-high",  # thinking Flash, freshness / exact values
-    "deep": "gemini-4-argon-low",           # comparison / analysis / multi-part questions
+    "deep": "gemini-4-neon-medium",        # comparison / analysis / multi-part questions
 }
 
 # Rule-based router (no extra LLM call). Order matters: deep beats standard beats fast.
@@ -255,6 +255,17 @@ def _request(query: str, system: Optional[str]) -> Dict[str, Any]:
 
 def _ground(client: Any, model: str, req: Dict[str, Any], timeout: float) -> Dict[str, Any]:
     data = client._generate(f"{client.base_url}/models/{model}:{client.GENERATE_METHOD}", req, timeout)
+    # Quota attribution: these calls bypass Hermes' usage accounting, so log them locally.
+    try:
+        import json as _json, os as _os, time as _time
+        um = data.get("usageMetadata") or {}
+        path = _os.path.join(_os.environ.get("HOME", "/home/user"), ".hermes", "grounding-usage.log")
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(_json.dumps({"t": _time.strftime("%Y-%m-%dT%H:%M:%S"), "model": model,
+                                  "in": um.get("promptTokenCount"), "out": um.get("candidatesTokenCount"),
+                                  "total": um.get("totalTokenCount")}, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
     return _candidate(data)
 
 
@@ -294,6 +305,10 @@ class GoogleGroundingWebSearchProvider(BaseWebSearchProvider):
             tier = route_tier(q) if mode == "auto" else mode
             if tier not in TIER_MODELS:
                 tier = "fast"
+            # skip_fast: drop the cheap flash-lite tier entirely — anything that would have
+            # routed to "fast" runs on the standard (thinking) model instead.
+            if tier == "fast" and cfg.get("skip_fast"):
+                tier = "standard"
             model = str(cfg.get(f"{tier}_model") or "").strip() or TIER_MODELS[tier]
             logger.info("Google grounding (%s/%s) search: '%s' (limit=%d, model=%s)", mode, tier, q, n, model)
             use_legal = bool(cfg.get("legal_system_prompt", False)) or _has_adult_marker(q)
