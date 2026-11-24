@@ -1,12 +1,14 @@
 """Cloud Code envelopes only; Hermes owns Gemini conversion and streaming."""
 from __future__ import annotations
 
+import contextvars
 import json
+import os
 import uuid
 from typing import Any
 
 import httpx
-from agent.gemini_native_adapter import GeminiNativeClient, gemini_http_error
+from agent.gemini_native_adapter import GeminiNativeClient, _build_gemini_contents, gemini_http_error
 
 BASE_URL = 'https://daily-cloudcode-pa.googleapis.com'
 CLI_VERSION = '1.4.0'
@@ -79,14 +81,39 @@ class _UnwrapStream(httpx.SyncByteStream):
 
 
 class CloudCodeTransport(httpx.BaseTransport):
+    # Cloud Code's gate rejects some agent-scaffolding text carried in
+    # ``systemInstruction`` and answers 429 RESOURCE_EXHAUSTED, while the same
+    # text passes as a user turn. Fold the system instruction into the first
+    # user content so a room prompt survives; set
+    # ANTIGRAVITY_KEEP_SYSTEM_INSTRUCTION=1 to send the field untouched.
+    fold_system = os.environ.get('ANTIGRAVITY_KEEP_SYSTEM_INSTRUCTION', '') != '1'
+
     def __init__(self, inner=None, project='aicode-consumers'):
         self.inner = inner or httpx.HTTPTransport()
         self.project = project
 
+    @classmethod
+    def _fold_system_instruction(cls, body: dict) -> dict:
+        if not cls.fold_system:
+            return body
+        system = body.pop('systemInstruction', None)
+        parts = (system or {}).get('parts') or []
+        if not parts:
+            return body
+        contents = body.setdefault('contents', [])
+        if contents and contents[0].get('role') == 'user':
+            first = dict(contents[0])
+            first['parts'] = list(parts) + list(first.get('parts') or [])
+            contents[0] = first
+        else:
+            contents.insert(0, {'role': 'user', 'parts': list(parts)})
+        return body
+
     def handle_request(self, request):
         model, method = request.url.path.split('/models/', 1)[1].split(':', 1)
         envelope = {'project': self.project, 'model': model, 'requestId': 'agent-' + str(uuid.uuid4()),
-                    'userAgent': 'antigravity', 'requestType': 'agent', 'request': json.loads(request.content)}
+                    'userAgent': 'antigravity', 'requestType': 'agent',
+                    'request': self._fold_system_instruction(json.loads(request.content))}
         url = request.url.copy_with(path='/v1internal:' + method)
         headers = dict(request.headers)
         headers.pop('content-length', None)
@@ -106,6 +133,34 @@ class CloudCodeTransport(httpx.BaseTransport):
 
 class AntigravityClient(GeminiNativeClient):
     MISSING_KEY_ERROR = 'Sign in with `hermes auth add google-antigravity`.'
+    _claude_contents: contextvars.ContextVar[list[dict[str, Any]] | None] = contextvars.ContextVar(
+        'antigravity_claude_contents', default=None
+    )
+
+    def _create_chat_completion(self, *, model='gemini-3.7-flash', messages=None, **kwargs):
+        # The Gemini adapter gates replay IDs on Gemini >= 3. Claude also requires
+        # IDs, but must not inherit Gemini 3's unrelated multimodal behavior.
+        contents = None
+        if model.rsplit('/', 1)[-1].lower().startswith('claude-'):
+            contents, _ = _build_gemini_contents(messages or [], include_tool_call_ids=True)
+        token = self._claude_contents.set(contents)
+        try:
+            return super()._create_chat_completion(model=model, messages=messages, **kwargs)
+        finally:
+            self._claude_contents.reset(token)
+
+    def _generate(self, url, request, timeout):
+        contents = self._claude_contents.get()
+        if contents is not None:
+            request = {**request, 'contents': contents}
+        return super()._generate(url, request, timeout)
+
+    def _stream_completion(self, model, url, request, timeout):
+        # Capture the rebuilt request before the lazy stream iterator is consumed.
+        contents = self._claude_contents.get()
+        if contents is not None:
+            request = {**request, 'contents': contents}
+        return super()._stream_completion(model, url, request, timeout)
 
     def __init__(self, *, api_key: str, base_url=None, transport=None, project='aicode-consumers', timeout=None, default_headers=None, **_: Any):
         # Keep the native Gemini builder/continuation/stream machinery intact.

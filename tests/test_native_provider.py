@@ -71,6 +71,75 @@ class NativeTests(unittest.TestCase):
         self.assertEqual(calls[0].extra_content['google']['thought_signature'], 'opaque-signature')
         self.assertTrue(any(getattr(c.choices[0].delta, 'reasoning_content', None) == 'private' for c in chunks))
 
+    def test_claude_streamed_parallel_tool_roundtrip_replays_ids(self):
+        # Claude is carried over Gemini wire, but unlike Gemini 2 it requires IDs.
+        seen = []
+        def backend(request):
+            body = json.loads(request.content)
+            seen.append(body)
+            if len(seen) == 1:
+                parts = [
+                    {'functionCall': {'id': 'toolu_one', 'name': 'lookup', 'args': {'key': 'a'}}, 'thoughtSignature': 'sig-one'},
+                    {'functionCall': {'id': 'toolu_two', 'name': 'lookup', 'args': {'key': 'b'}}, 'thoughtSignature': 'sig-two'},
+                ]
+                event = {'response': {'candidates': [{'content': {'parts': parts}, 'finishReason': 'STOP'}]}}
+                return httpx.Response(200, content=('data: ' + json.dumps(event) + '\n\n').encode())
+            parts = body['request']['contents']
+            calls = [p['functionCall'] for c in parts for p in c['parts'] if 'functionCall' in p]
+            results = [p['functionResponse'] for c in parts for p in c['parts'] if 'functionResponse' in p]
+            if [c.get('id') for c in calls] != ['toolu_one', 'toolu_two'] or [r.get('id') for r in results] != ['toolu_two', 'toolu_one']:
+                return httpx.Response(400, json={'error': {'message': 'messages.1.content.0.tool_use.id: Field required'}})
+            return httpx.Response(200, json={'response': {'candidates': [{'content': {'parts': [{'text': 'done'}]}, 'finishReason': 'STOP'}]}})
+
+        messages: list[dict] = [{'role': 'user', 'content': 'lookup both'}]
+        with plugin.google_antigravity.create_client(api_key='test', transport=httpx.MockTransport(backend)) as client:
+            chunks = list(client.chat.completions.create(model='claude-sonnet-5-5-low', messages=messages, stream=True))
+            calls = [c.choices[0].delta.tool_calls[0] for c in chunks if getattr(c.choices[0].delta, 'tool_calls', None)]
+            self.assertEqual([c.id for c in calls], ['toolu_one', 'toolu_two'])
+            messages.append({'role': 'assistant', 'content': None, 'tool_calls': [
+                {'id': c.id, 'type': 'function', 'function': {'name': c.function.name, 'arguments': c.function.arguments}, 'extra_content': c.extra_content} for c in calls]})
+            messages.extend([{'role': 'tool', 'tool_call_id': c.id, 'content': json.dumps({'key': c.id})} for c in reversed(calls)])
+            result = client.chat.completions.create(model='claude-sonnet-5-5-low', messages=messages)
+        self.assertEqual(result.choices[0].message.content, 'done')
+        parts = [p for c in seen[1]['request']['contents'] for p in c['parts']]
+        self.assertEqual([p['thoughtSignature'] for p in parts if 'functionCall' in p], ['sig-one', 'sig-two'])
+
+    def test_tool_id_policy_and_streamed_followup(self):
+        # A call lacking a provider ID gets a stable Hermes-generated ID. Replay
+        # must include it for Claude/Gemini 3+, but never for Gemini 2.5.
+        seen = []
+        def backend(request):
+            body = json.loads(request.content)
+            seen.append(body)
+            parts = [{'text': 'done'}]
+            if len(seen) % 2:
+                parts = [{'functionCall': {'name': 'lookup', 'args': {'key': 'a'}}}]
+            event = {'response': {'candidates': [{'content': {'parts': parts}, 'finishReason': 'STOP'}]}}
+            return httpx.Response(200, content=('data: ' + json.dumps(event) + '\n\n').encode())
+
+        with plugin.google_antigravity.create_client(api_key='test', transport=httpx.MockTransport(backend)) as client:
+            for model, include_ids in [('claude-sonnet-5-5-low', True), ('claude-opus-5-5-high', True),
+                                       ('gemini-3.8-flash-high', True), ('gemini-2.5-flash', False)]:
+                with self.subTest(model=model):
+                    messages: list[dict] = [{'role': 'system', 'content': 'system'}, {'role': 'user', 'content': 'lookup'}]
+                    chunks = list(client.chat.completions.create(model=model, messages=messages, stream=True))
+                    call = next(c.choices[0].delta.tool_calls[0] for c in chunks if getattr(c.choices[0].delta, 'tool_calls', None))
+                    self.assertTrue(call.id)
+                    messages.append({'role': 'assistant', 'tool_calls': [{'id': call.id, 'type': 'function', 'function': {'name': call.function.name, 'arguments': call.function.arguments}}]})
+                    messages.append({'role': 'tool', 'tool_call_id': call.id, 'content': 'ok'})
+                    result = list(client.chat.completions.create(model=model, messages=messages, stream=True))
+                    self.assertTrue(any(c.choices[0].delta.content == 'done' for c in result))
+                    request = seen[-1]['request']
+                    system_text = (request.get('systemInstruction') or {}).get('parts', [{}])[0].get('text')
+                    if system_text is None:  # CloudCodeTransport folds it into the first user turn
+                        system_text = request['contents'][0]['parts'][0]['text']
+                    self.assertEqual(system_text, 'system')
+                    parts = [p for c in request['contents'] for p in c['parts']]
+                    function_call = next(p['functionCall'] for p in parts if 'functionCall' in p)
+                    function_response = next(p['functionResponse'] for p in parts if 'functionResponse' in p)
+                    self.assertEqual(function_call.get('id'), call.id if include_ids else None)
+                    self.assertEqual(function_response.get('id'), call.id if include_ids else None)
+
     def test_catalog_has_live_context(self):
         self.assertTrue(callable(getattr(plugin.google_antigravity, 'fetch_catalog', None)), 'native catalog hook required')
         def backend(request):
